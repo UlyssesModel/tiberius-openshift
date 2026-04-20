@@ -1,0 +1,15 @@
+Kavara SmartOrderRouter — reference OpenShift deployment
+Copyright 2026 Kavara
+
+This product includes software developed by Kavara
+(https://kavara.ai).
+
+This reference implementation demonstrates the dispatch architecture used in
+Kavara's production `ts_sor_base` package. The production package carries
+additional numerical backends (C/MKL fused kernels, oneDNN AMX BRGEMM) and
+model-specific physics primitives that are not redistributed here.
+
+Policy table values (THRESHOLD_PROFILES, VENUE_POLICIES, BUCKET_THRESHOLDS)
+in sor_router.py are derived from empirical calibration experiments conducted
+by Kavara's platform engineering team on Intel Granite Rapids hardware inside
+Intel TDX Trust Domains. See README.md for experiment provenance.

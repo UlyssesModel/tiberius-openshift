@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+venv/
+.venv/
+env/
+.env
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kubernetes / OpenShift secrets — do NOT commit rendered manifests with tokens
+kubeconfig
+*.kubeconfig
+secrets.yaml
+*-secret.yaml
+
+# Docker build artifacts
+.dockerignore.local
+
+# Local runtime / test output
+lake/
+*.log
+output/

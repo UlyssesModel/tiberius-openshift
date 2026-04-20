@@ -1,0 +1,310 @@
+# Copyright 2026 Kavara. Licensed under the Apache License, Version 2.0.
+#
+# Kavara SmartOrderRouter — OpenShift deployment manifest
+# ========================================================
+#
+# Scope: OpenShift 4.14+. Deploys the reference SOR as an HTTPS-exposed
+# service, NUMA-aware-scheduled onto AMX-capable nodes, with policy
+# configuration externalized to a ConfigMap and monitoring integrated
+# with OpenShift's built-in Prometheus stack.
+#
+# Requirements:
+#   - OpenShift 4.14+
+#   - Node Feature Discovery (NFD) operator — for AMX_BF16 / TDX_GUEST labels
+#   - openshift-monitoring namespace (default on all OpenShift clusters)
+#   - OPTIONAL: OpenShift sandboxed containers (OSC) operator for TDX pods —
+#     uncomment RuntimeClass + runtimeClassName references when available
+#
+# Apply:
+#   oc apply -f deployment.yaml
+#
+# Tear down:
+#   oc delete namespace kavara-sor
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kavara-sor
+  labels:
+    openshift.io/cluster-monitoring: "true"
+    kavara.ai/component: smart-order-router
+  annotations:
+    openshift.io/description: "Kavara SmartOrderRouter — compute dispatch plane"
+    openshift.io/display-name: "Kavara SOR"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sor-policy
+  namespace: kavara-sor
+  labels:
+    app: sor-service
+data:
+  POLICY_VERSION: "2026-04-20.reference"
+  LOG_LEVEL: "INFO"
+  KAVARA_HARDWARE_ID: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sor-service
+  namespace: kavara-sor
+  labels:
+    app: sor-service
+    kavara.ai/component: smart-order-router
+    kavara.ai/adr: ADR-006
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: sor-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: sor-service
+        kavara.ai/component: smart-order-router
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Run only on AMX-capable nodes (NFD-reported CPUID flag).
+      # Remove this selector if running on non-AMX clusters for a reference
+      # deploy — the SOR still works, it just picks non-AMX venues.
+      nodeSelector:
+        feature.node.kubernetes.io/cpu-cpuid.AMX_BF16: "true"
+
+      # Uncomment to run as a TDX confidential container when OSC is available:
+      # runtimeClassName: kata-cc-tdx
+
+      # Spread replicas across NUMA zones — K8s-native Path 3 (one pod per
+      # NUMA sub-node). Adjust topologyKey to match your cluster's node labels.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: sor-service
+
+      containers:
+        - name: sor-service
+          image: image-registry.openshift-image-registry.svc:5000/kavara-sor/sor-service:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # Thread placement matches VENUE_POLICIES['gnr-tdx']['pinned']
+          # calibrated via E2 experiment 2026-04-20. stride-2 with 32 threads
+          # is the universal gnr-tdx winner at N≥500 per our measurement.
+          env:
+            - name: OMP_NUM_THREADS
+              value: "32"
+            - name: OMP_PLACES
+              value: "{0}:32:2"
+            - name: OMP_PROC_BIND
+              value: "close"
+            - name: MKL_NUM_THREADS
+              value: "32"
+            - name: ONEDNN_VERBOSE
+              value: "0"
+            - name: KAVARA_HARDWARE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: sor-policy
+                  key: KAVARA_HARDWARE_ID
+            - name: POLICY_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: sor-policy
+                  key: POLICY_VERSION
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: sor-policy
+                  key: LOG_LEVEL
+
+          resources:
+            requests:
+              cpu: "32"
+              memory: "8Gi"
+            limits:
+              cpu: "48"
+              memory: "16Gi"
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /alive
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sor-service
+  namespace: kavara-sor
+  labels:
+    app: sor-service
+spec:
+  type: ClusterIP
+  selector:
+    app: sor-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sor
+  namespace: kavara-sor
+  labels:
+    app: sor-service
+  annotations:
+    haproxy.router.openshift.io/timeout: "30s"
+spec:
+  to:
+    kind: Service
+    name: sor-service
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sor-service
+  namespace: kavara-sor
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sor-service
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sor-service-ingress
+  namespace: kavara-sor
+spec:
+  podSelector:
+    matchLabels:
+      app: sor-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kavara.ai/tier: client
+      ports:
+        - port: 8080
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-monitoring
+      ports:
+        - port: 8080
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              network.openshift.io/policy-group: ingress
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sor-service
+  namespace: kavara-sor
+  labels:
+    app: sor-service
+spec:
+  selector:
+    matchLabels:
+      app: sor-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - kavara-sor
+---
+# RuntimeClass for confidential containers via Kata + Intel TDX.
+# Uncomment when OpenShift sandboxed containers with TDX is GA on the target
+# cluster. Also uncomment `runtimeClassName: kata-cc-tdx` in the Deployment.
+#
+# apiVersion: node.k8s.io/v1
+# kind: RuntimeClass
+# metadata:
+#   name: kata-cc-tdx
+# handler: kata-clh-tdx
+# overhead:
+#   podFixed:
+#     cpu: "250m"
+#     memory: "120Mi"
+# scheduling:
+#   nodeSelector:
+#     katacontainers.io/kata-runtime: "true"
+#     feature.node.kubernetes.io/cpu-cpuid.TDX_GUEST: "true"
