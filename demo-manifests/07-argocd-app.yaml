@@ -1,4 +1,46 @@
 ---
+# Resource tune for the operator-managed ArgoCD instance. Required on
+# the Ulysses demo SNO because the default per-component requests
+# (250m × ~5 components = 1.25+ vCPU) push the node over its CPU
+# request ceiling when ulysses-sor is at 16 vCPU. We drop each to 50m
+# (ample for demo throughput) and disable Dex + ApplicationSet which
+# we don't need for a single-Application demo.
+#
+# Disabling SSO requires REMOVING the entire spec.sso block — setting
+# spec.sso.provider="" with spec.sso.dex still present causes the
+# operator to error out with "illegal SSO configuration: Cannot specify
+# SSO provider spec without specifying SSO provider type" and stop
+# reconciling. Same for spec.applicationSet — set to null to remove.
+#
+# This CR has the same name as the one auto-created by the GitOps
+# operator (`openshift-gitops` in `openshift-gitops` ns), so apply
+# strategic-merges into the existing instance.
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: openshift-gitops
+  namespace: openshift-gitops
+spec:
+  controller:
+    resources:
+      requests: {cpu: "50m", memory: "128Mi"}
+      limits:   {cpu: "500m", memory: "512Mi"}
+  repo:
+    resources:
+      requests: {cpu: "50m", memory: "128Mi"}
+      limits:   {cpu: "500m", memory: "512Mi"}
+  redis:
+    resources:
+      requests: {cpu: "50m", memory: "64Mi"}
+      limits:   {cpu: "500m", memory: "256Mi"}
+  server:
+    resources:
+      requests: {cpu: "50m", memory: "128Mi"}
+      limits:   {cpu: "500m", memory: "512Mi"}
+  # Disable ApplicationSet controller — single-Application demo doesn't
+  # need it. (sso block omitted entirely so the operator deletes Dex.)
+  applicationSet: null
+---
 # ArgoCD Application that reconciles the whole demo topology from Git.
 # Point this at the Kavara Git path where these YAMLs live; ArgoCD does
 # the rest. Per our 2026-04-20 call-1 decision with Mike, Argo is the
@@ -14,21 +56,27 @@ metadata:
 spec:
   project: default
   source:
-    # Replace with the Kavara-internal Git path hosting this directory.
-    # Example for tiberius-openshift: the repo's demo-manifests/ subdir.
-    repoURL: https://github.com/UlyssesModel/tiberius-openshift.git
+    # Public repo. The repoURL must EXACTLY match the URL field of the
+    # repository Secret in openshift-gitops ns (no trailing .git, since
+    # the Secret was created without it — Argo does string comparison).
+    repoURL: https://github.com/UlyssesModel/tiberius-openshift
     targetRevision: main
     path: demo-manifests
     directory:
       recurse: false
-      include: "0*.yaml"        # deploy 01-…-07-… in order
+      include: "0*.yaml"        # deploys 01-…-09-… in numeric order
   destination:
     server: https://kubernetes.default.svc
     namespace: ulysses-demo
+  # Sync policy is MANUAL (no automated block) — auto-sync is too
+  # aggressive when we have hand-tuned cluster state from yesterday's
+  # debugging (storage-class flip, listener mTLS, ConfigMap overrides
+  # for OCP Console dashboard, manual ulysses-sor scaling, etc.).
+  # First sync should be triggered from the Argo UI after JE eyeballs
+  # the diff — auto-prune + self-heal would risk blowing away that
+  # state. Once the cluster is fully reconciled to repo state and the
+  # diff is clean, this can be flipped back to `automated:` if desired.
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - CreateNamespace=false   # namespace ships in 01-namespace.yaml
       - ApplyOutOfSyncOnly=true
