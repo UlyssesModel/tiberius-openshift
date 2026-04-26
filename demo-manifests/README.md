@@ -74,6 +74,19 @@ the active one.
   heatmaps) in the conversion. Deferred indefinitely; the Grafana
   Operator path covers the keynote story.
 
+### Known drift (Argo OutOfSync count: 8)
+
+ArgoCD is wired as observer (auto-sync off). The following resources show OutOfSync against the repo and are accepted as the demo state. Cluster runs identically regardless of sync status.
+
+| Resource | Reason | Resolution path (v2 / production) |
+|---|---|---|
+| `Application/ulysses-demo`, `ArgoCD/openshift-gitops` | Self-tracking paradox — committing changes to `07-argocd-app.yaml` updates the Application CR which Argo tracks. Argo status fields drift continuously. | Exclude self-references from Argo's resource scope, or use ApplicationSet pattern. |
+| `Job/grafana-datasource-bootstrap`, `GrafanaDatasource/prometheus-thanos` | Removed from Git in commit `1707a11`; Argo tracker has phantom memory. Job ran successfully + TTL'd; GrafanaDatasource bypassed via API push due to Grafana Operator v5.22.2 secureJsonData substitution bug. | Tracker purges over time. Already removed from manifests. |
+| `Deployment/polygon-ingress`, `Kafka/kafka-cluster`, `KafkaUser/polygon-ingress` | Real cluster-side fields (admission-webhook defaults, operator-injected) not yet in Git YAML. | Diff individual resources, write back to YAML, or add resource-specific `ignoreDifferences`. |
+| `Deployment/ulysses-sor` | Rolling-update artifact from yesterday's iterative debugging. `dcls7` pod is the actual healthy SOR (running 20h+, producing entropy live). New ReplicaSet pods can't fit on SNO at 16-CPU sizing. | `oc rollout restart` after current pod state is stable, or scale-up the SNO. |
+
+All three live measurements (1.5M trades, 0.873 entropies/s, 1ms p95 window compute) reflect this exact cluster state. The OutOfSync count is GitOps hygiene work, not a functional issue.
+
 ## Phase 2 polish (deferred from 2026-04-26)
 
 Three dashboard panels are intentionally empty pending follow-up wiring;
