@@ -1,0 +1,65 @@
+---
+# Ulysses Entropy dashboard for the OpenShift Console (built-in, no
+# Grafana Operator required).
+#
+# OCP Console picks up dashboards from ConfigMaps in the namespace
+# `openshift-config-managed` that carry the label
+# `console.openshift.io/dashboard=true`. The ConfigMap data must include
+# a Grafana-format JSON keyed by a `*.json` filename.
+#
+# DELIVERY: this YAML can be `oc apply`'d directly — it ships a stub
+# ConfigMap that gets the label right but contains a placeholder. The
+# REAL dashboard JSON lives at `grafana/ulysses-demo-dashboard.json`
+# (~24 KB) and must be inlined imperatively after apply, because keeping
+# 24 KB of Grafana JSON in a YAML literal block is brittle (escape rules,
+# diff noise on every panel tweak, ArgoCD friction). Run:
+#
+#   oc -n openshift-config-managed create configmap ulysses-demo-dashboard \
+#     --from-file=ulysses-demo-dashboard.json=grafana/ulysses-demo-dashboard.json \
+#     --dry-run=client -o yaml | oc apply -f -
+#   oc -n openshift-config-managed label configmap/ulysses-demo-dashboard \
+#     console.openshift.io/dashboard=true --overwrite
+#
+# Then it appears at:  OCP Console → Monitoring → Dashboards →
+# "Ulysses Entropy — Capital-Markets Demo Live"
+#
+# If you'd rather use the third-party Grafana Operator (community
+# operator from OperatorHub), uncomment the GrafanaDashboard CR at the
+# bottom of this file AND install + configure a Grafana CR. The
+# OperatorHub path is heavier and not the default for OCP 4.x — we
+# went with the Console integration above for the demo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ulysses-demo-dashboard
+  namespace: openshift-config-managed
+  labels:
+    console.openshift.io/dashboard: "true"
+  annotations:
+    kavara.ai/source-path: "grafana/ulysses-demo-dashboard.json"
+data:
+  # PLACEHOLDER — replace via the imperative `oc create configmap
+  # --from-file=...` command in the comment block above. ArgoCD users
+  # should add a sync-hook or a kustomize patch to populate this from
+  # the real JSON file at deploy time.
+  ulysses-demo-dashboard.json: |
+    {"__placeholder__": "see grafana/ulysses-demo-dashboard.json — replace via oc create configmap --from-file=..."}
+---
+# Path A (Grafana Operator) — alternate, commented out. Requires the
+# community Grafana Operator + a Grafana CR with matching instance
+# selector labels. Use only if you're not satisfied with the OCP Console
+# rendering above.
+#
+# apiVersion: grafana.integreatly.org/v1beta1
+# kind: GrafanaDashboard
+# metadata:
+#   name: ulysses-demo
+#   namespace: ulysses-demo
+#   labels:
+#     app: kavara-ulysses
+# spec:
+#   instanceSelector:
+#     matchLabels:
+#       dashboards: "grafana"
+#   url: "https://github.com/UlyssesModel/tiberius-openshift/raw/main/demo-manifests/grafana/ulysses-demo-dashboard.json"
+#   resyncPeriod: 30s

@@ -1,0 +1,71 @@
+# =====================================================================
+# OpenShift install artifacts — contain admin kubeconfig, kubeadmin
+# password, GCP SA credentials (terraform.tfvars), full installer state,
+# CAPI envtest secrets. Never commit any of this.
+# =====================================================================
+/cluster/ulysses-demo-install/
+
+# Belt-and-braces in case install state lands outside the canonical dir
+.openshift_install*
+terraform.tfvars*
+terraform.tfstate*
+.clusterapi_output/
+log-bundle-*.tar.gz
+metadata.json
+kubeadmin-password
+
+# =====================================================================
+# install-config.yaml carries the Red Hat pullSecret + SSH public key.
+# The TEMPLATE under cluster/sno/ is safe (it has __TOKEN__ placeholders).
+# =====================================================================
+install-config.yaml
+install-config.yaml.bak
+
+# =====================================================================
+# Local-only env wrapper produced by the provisioning runbook. Sources
+# pullSecret via python eval against ~/gcp-openshift; never commit.
+# =====================================================================
+/cluster/.rebuild-env.sh
+
+# =====================================================================
+# Generic credential-shaped paths — auth dirs, kubeconfigs, key files
+# =====================================================================
+auth/
+*.kubeconfig
+*.key
+*.pem
+*.p12
+*.pfx
+
+# =====================================================================
+# Backups — editors, manual cp, Edit-tool sidecars. Often accidentally
+# carry stale secrets or stale config; never commit.
+# =====================================================================
+*.bak
+*.bak2
+*.orig
+*.rej
+
+# =====================================================================
+# Python build/cache artifacts (we have 04-polygon-ingress.py + image/
+# at the top level — pycache will appear if anyone runs python locally)
+# =====================================================================
+__pycache__/
+*.pyc
+*.pyo
+
+# =====================================================================
+# Ad-hoc local directories
+# =====================================================================
+/tmp/
+/build/
+/dist/
+
+# =====================================================================
+# Editor / OS artifacts
+# =====================================================================
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

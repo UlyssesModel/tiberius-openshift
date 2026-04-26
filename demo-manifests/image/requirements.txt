@@ -1,0 +1,13 @@
+# Kafka I/O. Wheel ships librdkafka — no system-level dep needed.
+confluent-kafka==2.4.0
+
+# Core numerics. Linked against OpenBLAS; picks up AMX via oneDNN when
+# the real Ulysses pipeline replaces this stub.
+numpy==1.26.4
+scipy==1.13.1
+
+# Prometheus instrumentation + a tiny http server for /healthz, /ready.
+prometheus-client==0.20.0
+
+# Structured logging — easy to parse downstream.
+python-json-logger==2.0.7

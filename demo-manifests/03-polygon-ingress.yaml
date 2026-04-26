@@ -1,0 +1,159 @@
+---
+# Toggle between live WebSocket and flat-file replay via this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: polygon-ingress-config
+  namespace: ulysses-demo
+data:
+  # Demo default is REPLAY mode: more reliable than live wss, doesn't
+  # depend on Polygon's WebSocket tier, and the keynote story is
+  # specifically the 2024-08-05 JPY carry-trade unwind. Replay reads
+  # Polygon's flat-file archives via REST with the same API key — a
+  # different endpoint that's often available on tiers where wss isn't.
+  # Switch to "live" only if the API key supports wss streaming AND
+  # you specifically want the live-stream story.
+  MODE: "replay"
+  # MODE: "live"                   # alternate — requires wss-enabled tier
+  REPLAY_DATE: "2024-08-05"        # JPY carry-trade unwind
+  TICKERS: "SPY,QQQ,AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,JPM"
+  KAFKA_BOOTSTRAP: "kafka-cluster-kafka-bootstrap.ulysses-demo.svc:9093"
+  TOPIC_TRADES: "market.equities.trades"
+  TOPIC_QUOTES: "market.equities.quotes"
+  SECURITY_PROTOCOL: "SSL"
+---
+# WARNING: the ingress.py value below is a PLACEHOLDER that recursively
+# re-execs itself — effectively a fork-bomb if the deployment runs as-is.
+# The real Polygon ingester source is at 04-polygon-ingress.py.
+# Immediately after `oc apply -f 03-polygon-ingress.yaml`, you MUST run:
+#
+#   oc -n ulysses-demo create configmap polygon-ingress-src \
+#     --from-file=ingress.py=04-polygon-ingress.py \
+#     --dry-run=client -o yaml | oc apply -f -
+#   oc -n ulysses-demo rollout restart deploy/polygon-ingress
+#
+# Skipping either of those will leave the pod CrashLoopBackOff'ing on the
+# placeholder. ArgoCD reconciling this manifest (07-argocd-app.yaml) will
+# RESET the ConfigMap back to the placeholder, so for production GitOps
+# the right answer is to bake the script into a custom image rather than
+# ship it via ConfigMap. See image/Dockerfile for the SOR consumer
+# pattern that does this correctly.
+#
+# The producer script lives in a ConfigMap for demo simplicity. In
+# production this would be a built image from a Git repo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: polygon-ingress-src
+  namespace: ulysses-demo
+data:
+  ingress.py: |
+    # See 04-polygon-ingress.py for the full, readable source.
+    # In a real deployment, build this into a UBI9 image and pull from
+    # registry.redhat.io or an internal registry.
+    import os, sys, subprocess
+    subprocess.run([sys.executable, "/opt/app/ingress.py"], check=True)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polygon-ingress
+  namespace: ulysses-demo
+  labels:
+    app: polygon-ingress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polygon-ingress
+  template:
+    metadata:
+      labels:
+        app: polygon-ingress
+    spec:
+      serviceAccountName: polygon-ingress
+      # Public market data — no confidentiality requirement, so runs on
+      # the cluster default runtime (no runtimeClassName), NOT in a TDX
+      # Trust Domain. RuntimeClass "runc" doesn't exist on stock OCP;
+      # omitting the field uses CRI-O's default handler.
+      containers:
+        - name: polygon-ingress
+          image: registry.access.redhat.com/ubi9/python-311
+          imagePullPolicy: IfNotPresent
+          # DEMO SHORTCUT: pip-install at pod start because we're using the bare ubi9/python-311
+          # image without baked-in deps. Production fix is a custom image — see image/Dockerfile
+          # for the SOR consumer pattern. The `exec` matters so SIGTERM reaches python cleanly.
+          command: ["/bin/sh", "-c"]
+          args:
+            - "pip install --no-cache-dir confluent-kafka==2.4.0 websocket-client requests prometheus-client && exec python /opt/app/ingress.py"
+          env:
+            - name: POLYGON_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: polygon-api-key
+                  key: POLYGON_API_KEY
+          envFrom:
+            - configMapRef:
+                name: polygon-ingress-config
+          volumeMounts:
+            - name: src
+              mountPath: /opt/app
+            - name: kafka-certs
+              mountPath: /etc/kafka-certs
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/ingress-ready"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/ingress-healthy"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: src
+          configMap:
+            name: polygon-ingress-src
+            defaultMode: 0755
+        - name: kafka-certs
+          # Strimzi's user secret ships ca.crt as the CLIENTS-CA (used
+          # by brokers to verify clients), NOT the cluster-CA. Clients
+          # need cluster-CA in the truststore to verify broker certs.
+          # Project both into one mount:
+          #   user.crt + user.key from <user> secret (mTLS auth)
+          #   ca.crt from <cluster>-cluster-ca-cert (broker truststore)
+          # Burned ~1h on this 2026-04-25.
+          projected:
+            sources:
+              - secret:
+                  name: polygon-ingress
+                  items:
+                    - { key: user.crt, path: user.crt }
+                    - { key: user.key, path: user.key }
+              - secret:
+                  name: kafka-cluster-cluster-ca-cert
+                  items:
+                    - { key: ca.crt, path: ca.crt }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: polygon-ingress-metrics
+  namespace: ulysses-demo
+  labels:
+    app: polygon-ingress
+spec:
+  selector:
+    app: polygon-ingress
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: 9100

@@ -1,0 +1,77 @@
+# Template rendered by ../provision-ulysses-demo-tdx.sh.
+# Tokens: __CLUSTER_NAME__ __BASE_DOMAIN__ __PROJECT_ID__ __REGION__ __ZONE__
+#         __MACHINE_TYPE__ __DISK_SIZE__ __SSH_PUBKEY__ __PULL_SECRET__
+#
+# Shape: Single-Node OpenShift (SNO) on GCP IPI with Intel TDX enabled on
+# the sole control-plane VM. The `compute[0].replicas: 0` + `controlPlane.
+# replicas: 1` pair is the SNO topology. IPI handles VPC, firewall, Cloud
+# DNS records, service account, and the full install dance.
+apiVersion: v1
+metadata:
+  name: __CLUSTER_NAME__
+baseDomain: __BASE_DOMAIN__
+
+platform:
+  gcp:
+    projectID: __PROJECT_ID__
+    region: __REGION__
+
+# SNO = one master, zero workers.
+controlPlane:
+  name: master
+  replicas: 1
+  architecture: amd64
+  hyperthreading: Enabled
+  platform:
+    gcp:
+      type: __MACHINE_TYPE__
+      zones:
+        - __ZONE__
+      osDisk:
+        diskSizeGB: __DISK_SIZE__
+        diskType: pd-ssd
+      # TDX at the host-VM level is not configurable via install-config in
+      # OCP 4.21.9 (schema predates "IntelTrustDomainExtensions"). Instead,
+      # we get TDX per-pod via OSC's kata-cc-tdx RuntimeClass, which uses
+      # the c3 host's TDX hardware capability to launch individual Kata-VMs
+      # as Trust Domains. Net effect for the demo: equivalent confidential
+      # compute posture, applied at the Ulysses-pod boundary rather than
+      # the whole node.
+
+compute:
+  - name: worker
+    replicas: 0
+    architecture: amd64
+    hyperthreading: Enabled
+    platform:
+      gcp:
+        type: __MACHINE_TYPE__
+
+networking:
+  networkType: OVNKubernetes
+  machineNetwork:
+    - cidr: 10.0.0.0/16
+  clusterNetwork:
+    - cidr: 10.128.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - 172.30.0.0/16
+
+# credentialsMode is intentionally NOT set — leaving it unset selects
+# Mint mode (the default), where openshift-install uses the SA key
+# referenced via GOOGLE_APPLICATION_CREDENTIALS to mint per-component
+# credentials automatically. Manual mode requires us to populate the
+# credential Secrets ourselves between `create manifests` and `create
+# cluster` — we tried that on 2026-04-24 and the script had a bug that
+# skipped the population step, leaving the cluster with 19 unpopulated
+# CredentialsRequest CRs and no functional GCP CCM.
+#
+# See postmortem/path-A-findings.md for the full diagnosis. Mint mode is
+# unblocked by a project-level org-policy exception that allows SA key
+# creation for one dedicated installer SA.
+
+# Pull secret (JSON blob) and SSH public key injected verbatim by the
+# script. Keep them at the bottom so any accidental clipboard paste of
+# the raw template doesn't leak a pull secret.
+pullSecret: '__PULL_SECRET__'
+sshKey: __SSH_PUBKEY__

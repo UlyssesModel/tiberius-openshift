@@ -1,0 +1,58 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ulysses-demo
+  labels:
+    # DO NOT add openshift.io/cluster-monitoring: "true" here. That label
+    # asks the platform-monitoring Prometheus to scrape this namespace,
+    # but platform Prometheus only handles cluster components — it
+    # ignores user ServiceMonitors. Worse, UWM (User Workload Monitoring,
+    # the right stack for user workloads) explicitly EXCLUDES namespaces
+    # with that label from its discovery scan, so adding it silently
+    # turns off all monitoring. UWM picks up unlabeled namespaces by
+    # default — leave this list as the workload-class hint only.
+    kavara.ai/workload-class: confidential-inference
+  annotations:
+    openshift.io/display-name: "Ulysses × OpenShift capital-markets demo"
+    openshift.io/description: |
+      Ulysses entropy-measurement demo: Polygon.io market data → AMQ Streams
+      → TDX-confidential Ulysses SOR consumers → Prometheus/Grafana.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ulysses-sor
+  namespace: ulysses-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: polygon-ingress
+  namespace: ulysses-demo
+---
+# The SOR consumer needs to pin threads via sched_setaffinity and read CPU
+# topology from sysfs. Minimal, tightly scoped.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ulysses-sor
+  namespace: ulysses-demo
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ulysses-sor
+  namespace: ulysses-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ulysses-sor
+subjects:
+  - kind: ServiceAccount
+    name: ulysses-sor
+    namespace: ulysses-demo

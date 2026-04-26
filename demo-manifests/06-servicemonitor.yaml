@@ -1,0 +1,94 @@
+---
+# Enable User Workload Monitoring (UWM) on the cluster. Without this,
+# the platform Prometheus only scrapes openshift-* namespaces and the
+# ServiceMonitors below are silently ignored. UWM brings up a separate
+# Prometheus + Thanos Ruler in openshift-user-workload-monitoring that
+# DOES scrape user namespaces (by default any namespace WITHOUT the
+# label `openshift.io/cluster-monitoring: "true"` — see 01-namespace.yaml
+# for why we DON'T set that label).
+#
+# Re-applying this is idempotent. UWM pods take ~2 min to come up after
+# this CM lands, then another ~30-60s for ServiceMonitor discovery.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+---
+# Scrapes polygon-ingress metrics: messages/sec per topic, errors, lag.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: polygon-ingress
+  namespace: ulysses-demo
+  labels:
+    app: polygon-ingress
+    team: kavara
+spec:
+  selector:
+    matchLabels:
+      app: polygon-ingress
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+---
+# Scrapes Ulysses SOR metrics: per-ticker entropy, window latency, backend
+# dispatch decisions, NFD-derived hardware_id, attestation heartbeat.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ulysses-sor
+  namespace: ulysses-demo
+  labels:
+    app: ulysses-sor
+    team: kavara
+spec:
+  selector:
+    matchLabels:
+      app: ulysses-sor
+  endpoints:
+    - port: metrics
+      interval: 5s
+      path: /metrics
+---
+# A starter PrometheusRule: fire when entropy rate drops (feed stall) or
+# when a regime-change spike crosses a configurable threshold. The
+# threshold belongs to the customer's dashboard — this is a demo alert.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ulysses-demo-alerts
+  namespace: ulysses-demo
+  labels:
+    role: alert-rules
+    team: kavara
+spec:
+  groups:
+    - name: ulysses.demo
+      rules:
+        - alert: PolygonFeedStalled
+          expr: rate(polygon_messages_total[1m]) < 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Polygon ingress stalled (less than 1 msg/s)"
+        - alert: UlyssesEntropySpike
+          expr: max by (ticker) (ulysses_entropy_score) > 0.85
+          for: 30s
+          labels:
+            severity: info
+          annotations:
+            summary: "Regime-change entropy spike on {{ $labels.ticker }}"
+            description: "Entropy for {{ $labels.ticker }} = {{ $value }} (>0.85)"
+        - alert: UlyssesConsumerLagHigh
+          expr: max(kafka_consumergroup_lag{consumergroup="ulysses-sor-eqty"}) > 10000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Ulysses consumer group is falling behind Polygon ingress"

@@ -1,0 +1,176 @@
+---
+# Config for the Ulysses SOR consumer. Window sizes, thread placement hints,
+# Kafka consumer group. The SOR itself reads hardware_id at startup from
+# NFD-exposed CPUID labels and selects placement from its policy table.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ulysses-sor-config
+  namespace: ulysses-demo
+data:
+  KAFKA_BOOTSTRAP: "kafka-cluster-kafka-bootstrap.ulysses-demo.svc:9093"
+  KAFKA_CONSUMER_GROUP: "ulysses-sor-eqty"
+  TOPIC_TRADES_IN: "market.equities.trades"
+  TOPIC_QUOTES_IN: "market.equities.quotes"
+  TOPIC_ENTROPY_OUT: "ulysses.entropy.equities"
+  SECURITY_PROTOCOL: "SSL"
+  WINDOW_SECONDS: "12"         # entropy emission cadence
+  EMBED_DIM: "32"              # one EBM per ticker stream dimension
+  SECOND_LAYER: "32"           # 32x32 cross-ticker second-layer stacking
+  LOG_LEVEL: "INFO"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ulysses-sor
+  namespace: ulysses-demo
+  labels:
+    app: ulysses-sor
+    kavara.ai/workload-class: confidential-inference
+  annotations:
+    kavara.ai/tdx-required: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ulysses-sor
+  template:
+    metadata:
+      labels:
+        app: ulysses-sor
+        kavara.ai/workload-class: confidential-inference
+      annotations:
+        # Ask scheduler to prefer nodes NFD has labelled with TDX and AMX.
+        nfd.node.kubernetes.io/match-features: |
+          - feature: cpu.cpuid
+            matchExpressions:
+              TDX_GUEST: {op: Exists}
+              AMX_BF16: {op: Exists}
+    spec:
+      serviceAccountName: ulysses-sor
+      # GCP/Azure split: on this cluster (GCP, c3-standard-44 standard VM,
+      # not a Confidential VM) the host has TDX-capable hardware but TDX
+      # is NOT active on the host. kata-cc-tdx requires host-level TDX,
+      # so it's unavailable here. Plain `kata` works because nested virt
+      # is enabled on standard GCP VMs — the workload still runs in a
+      # Kata VM (process / kernel isolation, separate address space),
+      # just not in a TDX Trust Domain.
+      #
+      # Equivalent confidential posture is restored on Azure DCesv6
+      # (Emerald Rapids + TDX) where the host is a TDX CVM and
+      # kata-cc-tdx is the right RuntimeClass. Flip this line back to
+      # `kata-cc-tdx` when deploying there. See
+      # ~/.claude/projects/-Users-jekavara/memory/project_peer_pods_subproject.md
+      # for the GCP-CVM-disables-nested-virt context that drove this split.
+      runtimeClassName: kata
+      # nodeSelector removed: this cluster's SNO doesn't run as a TDX
+      # CVM (it's a c3-standard-44 standard VM), so the kernel doesn't
+      # set the cpu-cpuid.TDX_GUEST CPUID flag and NFD won't apply the
+      # TDX_GUEST node label. With the selector in place the pod won't
+      # schedule. Restore the selector when deploying to Azure DCesv6
+      # where TDX_GUEST is actually set on the host kernel.
+      containers:
+        - name: sor
+          # This is Kavara's image. For the demo we pull from Quay.
+          # Production path is Red Hat Catalog / OperatorHub.
+          image: quay.io/kavara/ulysses-sor:demo-v1
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: ulysses-sor-config
+          env:
+            # Calibrated production optimum for GNR+TDX per KIRK study.
+            - name: OMP_NUM_THREADS
+              value: "32"
+            - name: OMP_PROC_BIND
+              value: "close"
+            - name: OMP_PLACES
+              value: "cores"
+            - name: MALLOC_ARENA_MAX
+              value: "4"
+          volumeMounts:
+            - name: kafka-certs
+              mountPath: /etc/kafka-certs
+              readOnly: true
+          resources:
+            # Asymmetric requests/limits: the SOR's calibrated optimum
+            # (per KIRK study on SPR+TDX) is 32 threads, but on this
+            # SNO ~28-32 vCPU is the usable envelope after Kafka +
+            # ingress + system overhead (~12-15 vCPU consumed). Request
+            # 16 vCPU as a conservative baseline that fits, allow burst
+            # to 32 when capacity is idle. Memory follows similar logic
+            # — request 8Gi to fit, allow up to 16Gi for transient
+            # spikes. On a multi-node prod cluster this should be
+            # reset to symmetric 32/32Gi for full AMX headroom.
+            requests:
+              cpu: "16"
+              memory: 8Gi
+            limits:
+              cpu: "32"
+              memory: 16Gi
+          ports:
+            - name: metrics
+              containerPort: 9100
+          readinessProbe:
+            httpGet: { path: /ready, port: 9100 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 9100 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: kafka-certs
+          # Strimzi user secret's ca.crt is the clients-CA (broker uses
+          # it to verify clients), NOT the cluster-CA. Clients need
+          # cluster-CA to verify broker certs. Project both into one
+          # mount — see polygon-ingress for the same fix and 03 file.
+          projected:
+            sources:
+              - secret:
+                  name: ulysses-sor
+                  items:
+                    - { key: user.crt, path: user.crt }
+                    - { key: user.key, path: user.key }
+              - secret:
+                  name: kafka-cluster-cluster-ca-cert
+                  items:
+                    - { key: ca.crt, path: ca.crt }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ulysses-sor-metrics
+  namespace: ulysses-demo
+  labels:
+    app: ulysses-sor
+spec:
+  selector:
+    app: ulysses-sor
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+---
+# HPA: scale consumer replicas by Kafka consumer-group lag (requires
+# keda or the Strimzi kafka exporter producing consumergroup_lag metrics).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ulysses-sor
+  namespace: ulysses-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ulysses-sor
+  minReplicas: 1
+  maxReplicas: 12
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: kafka_consumergroup_lag
+        target:
+          type: AverageValue
+          averageValue: "1000"

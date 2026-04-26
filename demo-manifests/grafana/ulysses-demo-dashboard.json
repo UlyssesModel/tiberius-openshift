@@ -1,0 +1,652 @@
+{
+  "_documentation": "OCP Console compat: every panel + target + templating var uses literal \"datasource\": \"prometheus\" (NOT a ${DS_PROMETHEUS} template variable) because OCP Console's built-in dashboard renderer does NOT evaluate Grafana templating variables of type=datasource. Original Grafana export had `{type: prometheus, uid: ${DS_PROMETHEUS}}` everywhere — that pattern silently breaks all panels in Console. Phase 2 polish (intentionally empty panels, see demo-manifests/README.md): panel 3 (polygon_errors_total — registered, never incremented under healthy operation), panel 5 (kafka_consumergroup_lag — needs Strimzi spec.kafkaExporter sidecar), panel 8 (kube_deployment_status_replicas_ready — kube-state-metrics is in platform Prometheus, not UWM). All 14 keynote-relevant entropy + window-compute panels populate without those fixes.",
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": "prometheus",
+        "enable": true,
+        "expr": "ALERTS{alertname=~\"PolygonFeedStalled|UlyssesEntropySpike|UlyssesConsumerLagHigh\",alertstate=\"firing\"}",
+        "iconColor": "red",
+        "name": "Ulysses alerts",
+        "titleFormat": "{{alertname}}",
+        "tagKeys": "severity,alertname",
+        "textFormat": "{{ticker}}"
+      }
+    ]
+  },
+  "description": "Live view of the Polygon \u2192 AMQ Streams \u2192 Ulysses SOR demo. Ingest health, consumer lag, per-ticker entropy, window compute latency, and the confidential-compute attestation indicator.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "icon": "external link",
+      "tags": [],
+      "targetBlank": true,
+      "title": "tiberius-openshift",
+      "tooltip": "Reference repository",
+      "type": "link",
+      "url": "https://github.com/UlyssesModel/tiberius-openshift"
+    }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 100,
+      "panels": [],
+      "title": "Ingest health \u2014 Polygon.io \u2192 AMQ Streams",
+      "type": "row"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Is the Polygon WebSocket (or replay) producer pushing messages? Goes yellow below 1 msg/s, red below 0.1.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0.1},
+              {"color": "green", "value": 1}
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "sum(rate(polygon_messages_total{namespace=\"$namespace\"}[1m]))",
+          "legendFormat": "ingress rate",
+          "refId": "A"
+        }
+      ],
+      "title": "Polygon feed rate",
+      "type": "stat"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Messages per second published to each Kafka topic by the Polygon ingress.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 6, "y": 1},
+      "id": 2,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "mean"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "sum by (topic) (rate(polygon_messages_total{namespace=\"$namespace\"}[1m]))",
+          "legendFormat": "{{topic}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Ingest rate by topic",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Ingress errors by kind (delivery, normalize, websocket, replay-fetch). Should stay at zero under healthy operation.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisLabel": "",
+            "drawStyle": "bars",
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {"group": "A", "mode": "normal"}
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 1},
+      "id": 3,
+      "options": {
+        "legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "sum by (kind) (rate(polygon_errors_total{namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Ingress errors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Current mode of the ingress producer. 1 = live WebSocket, 2 = historical replay.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"options": {"1": {"color": "green", "index": 0, "text": "LIVE"}, "2": {"color": "blue", "index": 1, "text": "REPLAY"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 5},
+      "id": 4,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "max(polygon_mode{namespace=\"$namespace\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "Ingress mode",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9},
+      "id": 101,
+      "panels": [],
+      "title": "Consumer health \u2014 Ulysses SOR (TDX-confidential pods)",
+      "type": "row"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "How far the Ulysses consumer group is behind the head of the input topics. Trigger for scaling.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "line+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1000},
+              {"color": "red", "value": 10000}
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+      "id": 5,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "sum by (topic) (kafka_consumergroup_lag{consumergroup=\"ulysses-sor-eqty\"})",
+          "legendFormat": "{{topic}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Consumer group lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Entropy messages successfully produced to ulysses.entropy.equities, per second. Tracks against the polygon ingest rate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "stacking": {"group": "A", "mode": "none"}
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 10},
+      "id": 6,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "sum(rate(ulysses_entropy_messages_produced_total{namespace=\"$namespace\"}[1m]))",
+          "legendFormat": "entropy emitted",
+          "refId": "A"
+        }
+      ],
+      "title": "Entropy emission rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Which hardware_id the SOR booted on. 'gnr-tdx' is the target production path (Granite Rapids under TDX).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"options": {
+              "gnr-tdx": {"color": "green", "index": 0, "text": "GNR+TDX"},
+              "gnr-baremetal": {"color": "blue", "index": 1, "text": "GNR (baremetal)"},
+              "spr": {"color": "blue", "index": 2, "text": "SPR+TDX"},
+              "amd-sevsnp": {"color": "purple", "index": 3, "text": "AMD+SEV-SNP"},
+              "amd": {"color": "orange", "index": 4, "text": "AMD"},
+              "intel-legacy": {"color": "yellow", "index": 5, "text": "Intel legacy"},
+              "unknown": {"color": "red", "index": 6, "text": "UNKNOWN"}
+            }, "type": "value"}
+          ]
+        }
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 10},
+      "id": 7,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/hardware_id/", "values": false},
+        "textMode": "name"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "max by (hardware_id) (ulysses_hardware_id_info{namespace=\"$namespace\"})",
+          "legendFormat": "{{hardware_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Attestation \u2014 hardware_id",
+      "type": "stat"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Consumer replicas currently Ready. HPA will scale between minReplicas=2 and maxReplicas=12.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 2}]}
+        }
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 14},
+      "id": 8,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"$namespace\",deployment=\"ulysses-sor\"}",
+          "legendFormat": "replicas",
+          "refId": "A"
+        }
+      ],
+      "title": "SOR replicas ready",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18},
+      "id": 102,
+      "panels": [],
+      "title": "Signal \u2014 von Neumann entropy per ticker",
+      "type": "row"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "The core output: entropy score per ticker, emitted once per WINDOW_SECONDS. Spikes above ~0.85 indicate structural disorder (regime change). Use the 'ticker' variable to filter.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisLabel": "entropy (nats)",
+            "axisPlacement": "left",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": 60000,
+            "thresholdsStyle": {"mode": "line"}
+          },
+          "max": 3.5,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "transparent", "value": null},
+              {"color": "orange", "value": 0.85}
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 19},
+      "id": 9,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max", "min"], "displayMode": "table", "placement": "right", "showLegend": true, "width": 260},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "ulysses_entropy_score{namespace=\"$namespace\",ticker=~\"$ticker\"}",
+          "legendFormat": "{{ticker}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Entropy by ticker",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
+      "id": 103,
+      "panels": [],
+      "title": "Window compute \u2014 latency and samples",
+      "type": "row"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Distribution of time to compute one (ticker, window) entropy. Histogram from the ulysses_window_compute_seconds bucket series.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "scaleDistribution": {"type": "linear"}
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "id": 10,
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {"exponent": 0.5, "fill": "dark-blue", "mode": "scheme", "reverse": false, "scale": "exponential", "scheme": "Blues", "steps": 64},
+        "exemplars": {"color": "rgba(255,0,255,0.7)"},
+        "filterValues": {"le": 1e-9},
+        "legend": {"show": true},
+        "rowsFrame": {"layout": "auto"},
+        "tooltip": {"show": true, "yHistogram": false},
+        "yAxis": {"axisLabel": "", "axisPlacement": "left", "reverse": false, "unit": "s"}
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "sum(increase(ulysses_window_compute_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])) by (le)",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Window compute latency distribution",
+      "type": "heatmap"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "p50 / p95 / p99 window compute latency. p99 under ~50ms keeps the full end-to-end envelope inside the sub-100ms target.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 32},
+      "id": 11,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ulysses_window_compute_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": "prometheus",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ulysses_window_compute_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": "prometheus",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ulysses_window_compute_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "title": "Window compute p50/p95/p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "How many samples are in the current rolling window per ticker. Need MIN_SAMPLES (default 64) before entropy is emitted.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "continuous-GrYlRd"},
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 32},
+      "id": 12,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": false},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "ulysses_window_samples{namespace=\"$namespace\",ticker=~\"$ticker\"}",
+          "legendFormat": "{{ticker}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Samples per window",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 40},
+      "id": 104,
+      "panels": [],
+      "title": "Alerts",
+      "type": "row"
+    },
+    {
+      "datasource": "prometheus",
+      "description": "Firing alerts from the PrometheusRule shipped in 06-servicemonitor.yaml.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "filterable": true, "inspect": false},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "alertname"}, "properties": [{"id": "custom.width", "value": 250}]},
+          {"matcher": {"id": "byName", "options": "severity"}, "properties": [{"id": "custom.width", "value": 110}]},
+          {"matcher": {"id": "byName", "options": "ticker"}, "properties": [{"id": "custom.width", "value": 120}]}
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 41},
+      "id": 13,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "ALERTS{alertname=~\"PolygonFeedStalled|UlyssesEntropySpike|UlyssesConsumerLagHigh\",alertstate=\"firing\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Firing alerts",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time": true, "Value": true, "__name__": true, "container": true, "endpoint": true, "instance": true, "job": true, "pod": true, "prometheus": true, "service": true},
+            "indexByName": {"alertname": 0, "severity": 1, "ticker": 2, "namespace": 3, "alertstate": 4, "summary": 5}
+          }
+        }
+      ],
+      "type": "table"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 40,
+  "tags": ["kavara", "ulysses", "openshift", "demo"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "ulysses-demo", "value": "ulysses-demo"},
+        "datasource": "prometheus",
+        "definition": "label_values(ulysses_entropy_score, namespace)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Namespace",
+        "multi": false,
+        "name": "namespace",
+        "options": [],
+        "query": {"qryType": 1, "query": "label_values(ulysses_entropy_score, namespace)", "refId": "StandardVariableQuery"},
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {"selected": false, "text": ["All"], "value": ["$__all"]},
+        "datasource": "prometheus",
+        "definition": "label_values(ulysses_entropy_score{namespace=\"$namespace\"}, ticker)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Ticker",
+        "multi": true,
+        "name": "ticker",
+        "options": [],
+        "query": {"qryType": 1, "query": "label_values(ulysses_entropy_score{namespace=\"$namespace\"}, ticker)", "refId": "StandardVariableQuery"},
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "Ulysses \u00d7 OpenShift \u2014 Capital-Markets Demo",
+  "uid": "ulysses-demo-v1",
+  "version": 1,
+  "weekStart": ""
+}

@@ -1,0 +1,10 @@
+# Local-only env wrapper produced by provisioning runbook
+.rebuild-env.sh
+
+# OpenShift install dir contains kubeconfig + admin password
+ulysses-demo-install/
+
+# Postmortem capture is local-only by default; promote individual
+# files explicitly if they should land in source control
+postmortem/_*.txt
+postmortem/_*.log

@@ -1,0 +1,196 @@
+---
+# Strimzi Kafka cluster — 3 brokers, KRaft mode (no ZooKeeper).
+# Sized for a ~500-ticker demo; bump resources/storage for production.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: kafka-cluster
+  namespace: ulysses-demo
+  annotations:
+    strimzi.io/kraft: enabled
+    strimzi.io/node-pools: enabled
+spec:
+  kafka:
+    version: 4.1.0
+    metadataVersion: 4.1-IV1
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+        # mTLS for internal clients. Without this, the listener is
+        # TLS-encrypted but anonymously authenticated — clients
+        # presenting certs come in as User:ANONYMOUS and KafkaUser
+        # ACLs don't match. Burned ~2 hours on this 2026-04-25.
+        authentication:
+          type: tls
+      - name: external
+        port: 9094
+        type: route
+        tls: true
+    config:
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      default.replication.factor: 3
+      min.insync.replicas: 2
+    authorization:
+      type: simple
+      # superUsers bypass ACLs without TLS creds. Lets admin tooling
+      # (kafka-console-consumer, kafka-get-offsets) connect via the
+      # PLAIN listener from inside a broker pod for ops/debug without
+      # needing to wire up client certs. Add a corresponding super-user
+      # cert if you want this principal usable from outside.
+      superUsers:
+        - CN=cluster-admin
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: controller
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  replicas: 3
+  roles: [controller]
+  storage:
+    type: persistent-claim
+    size: 10Gi
+    class: ssd-csi
+    deleteClaim: false
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: broker
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  replicas: 3
+  roles: [broker]
+  storage:
+    type: persistent-claim
+    size: 100Gi
+    class: ssd-csi
+    deleteClaim: false
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+---
+# Input: raw trades coming off Polygon. 12 partitions = 12 consumer parallelism.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: market.equities.trades
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    retention.ms: "86400000"       # 24h
+    segment.bytes: "134217728"     # 128 MiB
+    compression.type: "snappy"
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: market.equities.quotes
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    retention.ms: "86400000"
+    segment.bytes: "134217728"
+    compression.type: "snappy"
+---
+# Output: entropy per ticker per window. Longer retention for replay.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: ulysses.entropy.equities
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    retention.ms: "604800000"      # 7d
+    compression.type: "lz4"
+---
+# KafkaUser for the Ulysses consumer. Read input, write output, commit offsets.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: ulysses-sor
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  authentication:
+    type: tls
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: market.equities.
+          patternType: prefix
+        operations: [Read, Describe]
+      - resource:
+          type: topic
+          name: ulysses.entropy.equities
+        operations: [Write, Describe, Create]
+      - resource:
+          type: group
+          name: ulysses-sor-eqty
+        operations: [Read]
+      # confluent-kafka 2.4+ enables idempotent producer by default.
+      # InitProducerIdRequest requires cluster-level IdempotentWrite —
+      # without it producers fail with CLUSTER_AUTHORIZATION_FAILED on
+      # the first message. Add this for any KafkaUser that produces.
+      - resource:
+          type: cluster
+        operations: [IdempotentWrite]
+---
+# KafkaUser for the Polygon ingress producer. Write input topics only.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: polygon-ingress
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  authentication:
+    type: tls
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: market.equities.
+          patternType: prefix
+        operations: [Write, Describe, Create]
+      # Same idempotent-producer cluster ACL — see ulysses-sor block.
+      - resource:
+          type: cluster
+        operations: [IdempotentWrite]
