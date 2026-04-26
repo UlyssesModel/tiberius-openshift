@@ -1,0 +1,331 @@
+---
+# =====================================================================
+# Grafana (community) Operator + persistent Grafana instance for
+# rendering the v40 Ulysses dashboard JSON outside the OCP Console.
+#
+# Why this file exists:
+#   OCP Console's built-in monitoring dashboard renderer is locked to
+#   legacy Grafana schema v14 (rows-based, ~2017 vintage). Our
+#   `grafana/ulysses-demo-dashboard.json` is authored in modern v40
+#   schema (panels-based with gridPos), so OCP Console renders it
+#   blank. This Grafana instance pulls the SAME v40 JSON and renders
+#   it correctly — separate URL, OCP-Route-exposed, queries the
+#   cluster's Thanos-Querier (which federates platform Prometheus
+#   AND user-workload-monitoring Prometheus, so user-namespace metrics
+#   like `ulysses_entropy_messages_produced_total` are reachable).
+#
+# Three-step apply:
+#   1. `oc apply -f 09-grafana-operator.yaml` — creates the operator
+#      Subscription, RBAC, PVC, Grafana CR (with PVC mounted at
+#      /var/lib/grafana for persistence), Datasource CR (declarative
+#      source-of-truth — see comment on the CR re: known operator bug),
+#      Dashboard CR, and the bootstrap Job.
+#
+#      First-apply on a fresh cluster will fail the Grafana/Datasource/
+#      Dashboard/Job manifests until the Operator's CSV reaches
+#      Succeeded. Re-apply once `oc -n grafana-system get csv` shows
+#      grafana-operator.* in Succeeded — idempotent.
+#
+#   2. `oc -n grafana-system create configmap ulysses-demo-dashboard-cm \
+#         --from-file=ulysses-demo-dashboard.json=grafana/ulysses-demo-dashboard.json \
+#         --dry-run=client -o yaml | oc apply -f -`
+#      (regenerate this CM whenever the JSON changes; the
+#      GrafanaDashboard CR below references it.)
+#
+#   3. **Populate the bearer token Secret** (do this AFTER the SA exists
+#      but BEFORE the Job starts the bootstrap — or restart the Job).
+#      The Secret must hold the literal Authorization header VALUE
+#      — that means the token PREFIXED with `Bearer ` (with the space).
+#      Run:
+#
+#        TOKEN=$(oc create token grafana-sa -n grafana-system --duration=8760h)
+#        oc -n grafana-system create secret generic grafana-thanos-token \
+#          --from-literal=token="Bearer $TOKEN" \
+#          --dry-run=client -o yaml | oc apply -f -
+#        oc -n grafana-system delete job grafana-datasource-bootstrap --ignore-not-found
+#        oc apply -f 09-grafana-operator.yaml   # re-apply just to recreate the Job
+#
+# Access after the Job completes:
+#   Route:  oc -n grafana-system get route ulysses-grafana-route \
+#             -o jsonpath='{.spec.host}'
+#   Login:  user `admin` + password from
+#             oc -n grafana-system get secret ulysses-grafana-admin-credentials \
+#               -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 -d
+#   /etc/hosts: the Route hostname `ulysses-grafana-route-grafana-system.apps.<basedomain>`
+#               needs to resolve to the apps LB IP (same one the OCP
+#               Console uses) — add to /etc/hosts on any laptop that
+#               browses to it.
+#
+# Token rotation:
+#   Tokens issued via `oc create token --duration=8760h` are valid for
+#   1 year. To rotate, re-run step 3. Grafana's stored datasource has
+#   the token cached; the Job's idempotency check skips re-creation,
+#   so to force a refresh either delete the existing datasource via
+#   Grafana API first, or change the Job's idempotency logic to PATCH
+#   instead of skip.
+# =====================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: grafana-system
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: grafana-operator
+  namespace: grafana-system
+spec:
+  targetNamespaces: [grafana-system]
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: grafana-operator
+  namespace: grafana-system
+spec:
+  channel: v5
+  installPlanApproval: Automatic
+  name: grafana-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+---
+# ---------- Wait for the Subscription's CSV to reach Succeeded ----------
+# Everything below references CRDs the operator installs; first-apply on
+# a fresh cluster will fail those manifests until the CSV finishes. Re-
+# apply once `oc -n grafana-system get csv` shows grafana-operator.*
+# in Succeeded phase. Idempotent.
+# ------------------------------------------------------------------------
+
+# SA used by Grafana itself (deployment.serviceAccountName) AND the
+# bootstrap Job (it generates a TokenRequest-issued JWT for this SA).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-sa
+  namespace: grafana-system
+---
+# Grants read access on cluster monitoring resources, including the
+# Thanos-Querier query API. Bound to grafana-sa.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-cluster-monitoring-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sa
+    namespace: grafana-system
+---
+# Bearer-token Secret for the Thanos-Querier datasource. PLACEHOLDER —
+# populate via step 3 in the header comment. Until populated, the Job
+# will create a broken datasource that 401s; the placeholder string
+# below makes the Job runnable but useless.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-thanos-token
+  namespace: grafana-system
+type: Opaque
+stringData:
+  token: "Bearer PLACEHOLDER-RUN-STEP-3-FROM-HEADER"
+---
+# Persistent storage for Grafana's SQLite DB (datasource config, dashboard
+# snapshots, user prefs, plugin state). Without this, every pod restart
+# wipes the manually-pushed datasource (the Operator's
+# GrafanaDatasource path has a known bug — see CR comment below).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: grafana-system
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+  # ssd-csi was set as the cluster default in cluster/02-kafka-cluster.yaml
+  # work; pd-standard isn't compatible with c3-standard-44 hosts.
+  storageClassName: ssd-csi
+---
+# The Grafana instance. Operator deploys a Deployment + Service + Route
+# automatically. PVC mounted at /var/lib/grafana so datasource config
+# survives pod restarts. admin_password unset → operator generates one
+# and stores it in `ulysses-grafana-admin-credentials` Secret.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: Grafana
+metadata:
+  name: ulysses-grafana
+  namespace: grafana-system
+  labels:
+    # Datasource + Dashboard CRs use this label as their instance selector
+    dashboards: ulysses-grafana
+spec:
+  config:
+    log:
+      mode: "console"
+      level: "info"
+    auth:
+      disable_signout_menu: "true"
+    auth.anonymous:
+      enabled: "false"
+    security:
+      admin_user: admin
+  deployment:
+    spec:
+      template:
+        spec:
+          serviceAccountName: grafana-sa
+          volumes:
+            - name: grafana-data
+              persistentVolumeClaim:
+                claimName: grafana-data
+          containers:
+            - name: grafana
+              volumeMounts:
+                - name: grafana-data
+                  mountPath: /var/lib/grafana
+  service:
+    spec:
+      type: ClusterIP
+  route:
+    spec:
+      tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
+---
+# Prometheus datasource — declarative source-of-truth for when the
+# Operator's secureJsonData substitution bug is fixed upstream.
+#
+# KNOWN ISSUE — Grafana Operator v5.22.2:
+#   The `valuesFrom` / `secureJsonData` substitution mechanism doesn't
+#   correctly render the bearer token into Grafana's API call. Even
+#   with the Secret holding the literal "Bearer <jwt>" string and the
+#   YAML's httpHeaderValue1 set to ${TOKEN_VALUE}, the resulting
+#   datasource in Grafana shows secureJsonFields.httpHeaderValue1=true
+#   but with garbage content that 401's against Thanos-Querier.
+#
+# WORKAROUND: the bootstrap Job below pushes the same datasource via
+#   Grafana's admin API directly (POST /api/datasources), where the
+#   bearer token is correctly applied. The PVC ensures it persists
+#   across pod restarts. When the operator bug is fixed, delete the
+#   manually-pushed datasource (`oc -n grafana-system exec ... curl
+#   -X DELETE /api/datasources/uid/<uid>`) and let this CR take over.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: prometheus-thanos
+  namespace: grafana-system
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: ulysses-grafana
+  datasource:
+    name: prometheus               # lowercase — matches what the dashboard JSONs reference
+    type: prometheus
+    url: https://thanos-querier.openshift-monitoring.svc:9091   # 9091 = web (cluster-wide); NOT 9092 (tenancy / namespace-scoped UWM)
+    access: proxy
+    isDefault: true
+    editable: true
+    jsonData:
+      tlsSkipVerify: true
+      timeInterval: "5s"
+      httpMethod: POST
+      httpHeaderName1: 'Authorization'
+    secureJsonData:
+      httpHeaderValue1: '${TOKEN_VALUE}'
+  valuesFrom:
+    - targetPath: secureJsonData.httpHeaderValue1
+      valueFrom:
+        secretKeyRef:
+          name: grafana-thanos-token
+          key: token                # Secret value MUST be the literal string "Bearer <jwt>" (full header value)
+---
+# Dashboard CR — references the ConfigMap that holds the dashboard JSON.
+# That ConfigMap is created imperatively (see header step 2) because
+# 24 KB of Grafana JSON in a YAML literal block is brittle (escape
+# rules, diff noise on every panel tweak). The operator polls the CM
+# every 30s and re-publishes the dashboard via Grafana's HTTP API on
+# changes. This part of the operator path WORKS correctly.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: ulysses-demo-dashboard
+  namespace: grafana-system
+  labels:
+    app: kavara-ulysses
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: ulysses-grafana
+  configMapRef:
+    name: ulysses-demo-dashboard-cm
+    key: ulysses-demo-dashboard.json
+  resyncPeriod: 30s
+---
+# Bootstrap Job — pushes the Prometheus datasource to Grafana via its
+# admin API, working around the operator's secureJsonData bug. Idempotent:
+# checks if the datasource already exists (HTTP 200 from
+# /api/datasources/name/prometheus) and exits cleanly if so. Survives
+# Grafana pod restarts because the datasource is in /var/lib/grafana
+# which is on the PVC above.
+#
+# Inputs:
+#   - GRAFANA_PASS from secret ulysses-grafana-admin-credentials
+#     (generated by the Operator on Grafana CR reconcile)
+#   - BEARER_HEADER from secret grafana-thanos-token (populated by step
+#     3 in the header — must be the full "Bearer <jwt>" string)
+#
+# Image: registry.access.redhat.com/ubi9/python-311 — has curl + bash
+# pre-installed and is OCP-restricted-SCC-friendly (non-root). Already
+# cached on this cluster from polygon-ingress, so pull is fast.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-datasource-bootstrap
+  namespace: grafana-system
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: pusher
+          image: registry.access.redhat.com/ubi9/python-311:latest
+          env:
+            - name: GRAFANA_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ulysses-grafana-admin-credentials
+                  key: GF_SECURITY_ADMIN_PASSWORD
+            - name: BEARER_HEADER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-thanos-token
+                  key: token
+          command: [/bin/bash, -c]
+          args:
+            - |
+              set -euo pipefail
+              # Wait up to 5 min for Grafana (HTTP 200 on /api/health)
+              for i in $(seq 1 60); do
+                CODE=$(curl -ksS -o /dev/null -w "%{http_code}" http://ulysses-grafana-service:3000/api/health || echo 000)
+                if [[ "$CODE" == "200" ]]; then echo "Grafana ready"; break; fi
+                echo "waiting for Grafana ($i/60), got HTTP $CODE..."; sleep 5
+              done
+              # Idempotency: HTTP 200 = exists, 404 = missing
+              HTTP=$(curl -ksS -o /dev/null -w "%{http_code}" -u "admin:${GRAFANA_PASS}" "http://ulysses-grafana-service:3000/api/datasources/name/prometheus")
+              if [[ "$HTTP" == "200" ]]; then
+                echo "datasource 'prometheus' already exists (HTTP 200), nothing to do"
+                exit 0
+              fi
+              echo "datasource missing (HTTP $HTTP), creating..."
+              curl -ksS -u "admin:${GRAFANA_PASS}" -X POST -H "Content-Type: application/json" \
+                http://ulysses-grafana-service:3000/api/datasources \
+                -d "{\"name\":\"prometheus\",\"type\":\"prometheus\",\"access\":\"proxy\",\"isDefault\":true,\"url\":\"https://thanos-querier.openshift-monitoring.svc:9091\",\"jsonData\":{\"tlsSkipVerify\":true,\"httpHeaderName1\":\"Authorization\",\"httpMethod\":\"POST\",\"timeInterval\":\"5s\"},\"secureJsonData\":{\"httpHeaderValue1\":\"${BEARER_HEADER}\"}}"
+              echo
+              echo "datasource created"

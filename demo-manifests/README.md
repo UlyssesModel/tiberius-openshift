@@ -1,5 +1,8 @@
 # demo-manifests
 
+> [!WARNING]
+> **First-time clone note:** If you're pulling this for the first time, the Polygon API key in early commit history was rotated on **2026-04-26**; use your own key. Manifests reference the key via Kubernetes `Secret/polygon-api-key` (see `01-namespace.yaml` + the runbook for how to populate it).
+
 This directory is the **working evolution** of the [tiberius-openshift](../)
 reference stub that anchored the April 2026 architectural conversation
 with Red Hat. Where tiberius captured the *shape* of the substrate matrix
@@ -41,6 +44,35 @@ architecture questions still being negotiated (peer-pods on GCP
 confidential VMs, AMD SEV-SNP cell parity, Azure DCesv6 GA schedule,
 GPU-on-Kata story, attestation handoff, multi-node prod topology) live
 in the project workspace, not in this repo.
+
+## Observability
+
+Two rendering paths for the same v40 Grafana dashboard JSON
+(`grafana/ulysses-demo-dashboard.json`); the Grafana Operator path is
+the active one.
+
+- **Active — Grafana Operator** (`09-grafana-operator.yaml`).
+  Community Grafana Operator (channel `v5`) deploys a Grafana 12.x
+  instance in `grafana-system`, mounts a 5 Gi PVC at
+  `/var/lib/grafana` for persistence, and a bootstrap `Job`
+  idempotently pushes the Prometheus datasource via Grafana's admin
+  API (working around an Operator v5.22.2 `valuesFrom` substitution
+  bug — see `feedback_ocp_thanos_querier_grafana_auth.md` in
+  auto-memory). Datasource queries OCP's Thanos-Querier on port 9091,
+  which federates platform Prometheus + UWM. Dashboard renders all 18
+  panels natively. Browser at the Route hostname (`oc -n grafana-system
+  get route ulysses-grafana-route`) — needs the apps wildcard IP in
+  /etc/hosts.
+
+- **Deferred — OCP Console** (`08-grafana-dashboard.yaml`). OCP
+  Console's built-in dashboard renderer is locked to **legacy Grafana
+  schema v14** (rows-based, ~2017 vintage). Our dashboard is
+  **schema v40** (panels-based with `gridPos`), so OCP Console lists
+  the dashboard but renders the panel area blank. A v14 rewrite is
+  the only way to use OCP-native rendering — ~1–2 hours of grunt
+  work; lose modern panel types (smooth timeseries, exemplar-aware
+  heatmaps) in the conversion. Deferred indefinitely; the Grafana
+  Operator path covers the keynote story.
 
 ## Phase 2 polish (deferred from 2026-04-26)
 

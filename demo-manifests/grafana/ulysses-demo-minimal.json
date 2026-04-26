@@ -1,0 +1,51 @@
+{
+  "_documentation": "Minimal v40 reference shape from the OCP Console bisect (2026-04-26). Useful as a starting point when adding new panels or testing schema compatibility.",
+  "title": "Ulysses Minimal Test",
+  "uid": "ulysses-demo-minimal",
+  "schemaVersion": 40,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "tags": ["kavara", "ulysses", "minimal-bisect"],
+  "annotations": {"list": []},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Entropy emission rate",
+      "type": "timeseries",
+      "datasource": "prometheus",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"showLegend": true, "displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "single", "sort": "none"}
+      },
+      "targets": [
+        {
+          "datasource": "prometheus",
+          "expr": "sum(rate(ulysses_entropy_messages_produced_total[1m]))",
+          "legendFormat": "entropy/s",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

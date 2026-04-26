@@ -1,18 +1,35 @@
 ---
-# Ulysses Entropy dashboard for the OpenShift Console (built-in, no
-# Grafana Operator required).
+# OCP Console dashboard delivery — DEFERRED. The active observability
+# path is the Grafana Operator deployment in 09-grafana-operator.yaml;
+# this file is retained as a Path B reference for future v14 rewrites.
 #
-# OCP Console picks up dashboards from ConfigMaps in the namespace
-# `openshift-config-managed` that carry the label
-# `console.openshift.io/dashboard=true`. The ConfigMap data must include
-# a Grafana-format JSON keyed by a `*.json` filename.
+# Why deferred: OCP Console's built-in dashboard renderer is locked to
+# legacy Grafana schema v14 (rows-based, ~2017 vintage). The Ulysses
+# dashboard JSON at grafana/ulysses-demo-dashboard.json is authored in
+# modern schema v40 (panels-based with gridPos). Console accepts the
+# JSON via the ConfigMap pickup mechanism in `openshift-config-managed`
+# and lists the title in Observe → Dashboards, but the panel area
+# renders blank because Console can't parse the modern .panels[] array.
+# See ../README.md "Observability" section for full context.
 #
-# DELIVERY: this YAML can be `oc apply`'d directly — it ships a stub
-# ConfigMap that gets the label right but contains a placeholder. The
-# REAL dashboard JSON lives at `grafana/ulysses-demo-dashboard.json`
-# (~24 KB) and must be inlined imperatively after apply, because keeping
-# 24 KB of Grafana JSON in a YAML literal block is brittle (escape rules,
-# diff noise on every panel tweak, ArgoCD friction). Run:
+# Two ways forward if/when you want OCP-native rendering:
+# 1) Rewrite the dashboard JSON in v14 schema (~1–2h grunt work; lose
+#    smooth timeseries + heatmap-with-exemplars; map stat→singlestat,
+#    timeseries→graph, heatmap→heatmap-legacy, table→table). Then this
+#    file's stub ConfigMap pattern works.
+# 2) Author a NEW v14-native dashboard scoped to ulysses-demo namespace
+#    (manual or via Console UI export). Drop into this file's data
+#    block as the canonical OCP-native artifact.
+#
+# Until either of those happens, this file is documentation. Apply does
+# nothing meaningful (creates a placeholder ConfigMap that OCP Console
+# will pick up and render blank — same as today's state).
+#
+# ORIGINAL DELIVERY DOCS (kept for reference if path is reactivated):
+# OCP Console picks up dashboards from ConfigMaps in `openshift-config-managed`
+# that carry the label `console.openshift.io/dashboard=true`. After
+# `oc apply -f 08-grafana-dashboard.yaml`, regenerate the CM with the
+# real dashboard JSON (must be v14-schema for Console to render):
 #
 #   oc -n openshift-config-managed create configmap ulysses-demo-dashboard \
 #     --from-file=ulysses-demo-dashboard.json=grafana/ulysses-demo-dashboard.json \
@@ -20,14 +37,8 @@
 #   oc -n openshift-config-managed label configmap/ulysses-demo-dashboard \
 #     console.openshift.io/dashboard=true --overwrite
 #
-# Then it appears at:  OCP Console → Monitoring → Dashboards →
+# Then it appears at:  OCP Console → Observe → Dashboards →
 # "Ulysses Entropy — Capital-Markets Demo Live"
-#
-# If you'd rather use the third-party Grafana Operator (community
-# operator from OperatorHub), uncomment the GrafanaDashboard CR at the
-# bottom of this file AND install + configure a Grafana CR. The
-# OperatorHub path is heavier and not the default for OCP 4.x — we
-# went with the Console integration above for the demo.
 apiVersion: v1
 kind: ConfigMap
 metadata:
