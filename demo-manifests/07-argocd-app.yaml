@@ -88,14 +88,73 @@ spec:
         factor: 2
         maxDuration: 5m
   revisionHistoryLimit: 10
-  # Ignore the Strimzi-managed KafkaTopic status drift that the Topic Operator
-  # writes continuously; avoids noisy out-of-sync states in ArgoCD.
+  # Status fields + cluster-controller-managed fields that Argo would
+  # otherwise show as OutOfSync drift. Captured from live Application
+  # CR on 2026-04-26 after first reconcile pass; baked back into source
+  # so re-applies don't widen the diff.
   ignoreDifferences:
+    # Core resources — cluster-managed defaults
+    - group: ""
+      kind: ServiceAccount
+      jsonPointers:
+        - /secrets
+        - /imagePullSecrets
+    - group: ""
+      kind: Service
+      jsonPointers:
+        - /spec/clusterIP
+        - /spec/clusterIPs
+        - /spec/ipFamilies
+        - /spec/ipFamilyPolicy
+        - /spec/internalTrafficPolicy
+    # Strimzi — Topic/User/Node-pool/Cluster operators write status continuously
+    - group: kafka.strimzi.io
+      kind: Kafka
+      jsonPointers:
+        - /status
+    - group: kafka.strimzi.io
+      kind: KafkaNodePool
+      jsonPointers:
+        - /status
     - group: kafka.strimzi.io
       kind: KafkaTopic
       jsonPointers:
         - /status
     - group: kafka.strimzi.io
-      kind: Kafka
+      kind: KafkaUser
       jsonPointers:
         - /status
+    # Grafana Operator — status churn + spec.config the operator manages
+    - group: grafana.integreatly.org
+      kind: Grafana
+      jsonPointers:
+        - /status
+        - /spec/config
+    - group: grafana.integreatly.org
+      kind: GrafanaDashboard
+      jsonPointers:
+        - /status
+    - group: grafana.integreatly.org
+      kind: GrafanaDatasource
+      jsonPointers:
+        - /status
+    # Prometheus Operator (UWM) — status fields
+    - group: monitoring.coreos.com
+      kind: PrometheusRule
+      jsonPointers:
+        - /status
+    - group: monitoring.coreos.com
+      kind: ServiceMonitor
+      jsonPointers:
+        - /status
+    # ArgoCD self-tracking — operator manages spec.version of its own CR
+    - group: argoproj.io
+      kind: ArgoCD
+      jsonPointers:
+        - /status
+        - /spec/version
+    # Deployments — HPA writes spec.replicas
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
