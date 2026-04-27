@@ -1,0 +1,85 @@
+---
+# Triggers polygon-ingress rollout-restart every 10 min so the Grafana
+# dashboard has continuous fresh data during demo periods (Intel Fed
+# Summit prep, customer conversations, keynote shots).
+#
+# The replay completes in ~15s and produces ~500K trades to
+# market.equities.trades, which the SOR consumer then processes into
+# entropy emissions on ulysses.entropy.equities. Dashboard panels stay
+# populated indefinitely.
+#
+# For production: replace with a real-time ingest source (Polygon WS or
+# similar) and remove this CronJob. The replay-on-loop is a demo pattern,
+# not a production pattern.
+#
+# RBAC: dedicated SA `polygon-replay-trigger` with namespace-scoped
+# patch perms on Deployments only. Minimal blast radius.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: polygon-replay-trigger
+  namespace: ulysses-demo
+---
+# Role: tightly scoped — only the polygon-ingress Deployment is
+# touchable, and only get + patch (the verbs `oc rollout restart`
+# needs to read the Deployment then patch its pod-template
+# annotation `kubectl.kubernetes.io/restartedAt`). No list, watch,
+# delete, or write on any other resource type.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: polygon-replay-trigger
+  namespace: ulysses-demo
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["polygon-ingress"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: polygon-replay-trigger
+  namespace: ulysses-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: polygon-replay-trigger
+subjects:
+  - kind: ServiceAccount
+    name: polygon-replay-trigger
+    namespace: ulysses-demo
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: polygon-replay-keepalive
+  namespace: ulysses-demo
+spec:
+  schedule: "*/10 * * * *"          # every 10 min on the wall clock
+  concurrencyPolicy: Forbid         # skip new run if previous hasn't finished
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  startingDeadlineSeconds: 60       # if the run can't start within 60s of schedule, skip
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 300  # GC completed Jobs after 5 min
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: polygon-replay-trigger
+          containers:
+            - name: trigger
+              image: registry.redhat.io/openshift4/ose-cli:latest
+              imagePullPolicy: IfNotPresent
+              command: [/bin/sh, -c]
+              args:
+                - oc -n ulysses-demo rollout restart deployment/polygon-ingress
+              resources:
+                requests:
+                  cpu: "10m"
+                  memory: "32Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "128Mi"

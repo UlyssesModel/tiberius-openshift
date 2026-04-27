@@ -64,7 +64,13 @@ spec:
     path: demo-manifests
     directory:
       recurse: false
-      include: "0*.yaml"        # deploys 01-…-09-… in numeric order
+      # Argo's include is a Go filepath.Match glob (shell-like, not
+      # regex). "0*.yaml" only matches 0-prefixed files; files
+      # numbered 10+ would be silently skipped. "[01]*.yaml" covers
+      # 00-19 cleanly. Widen to [0-9][0-9]-*.yaml or *.yaml when we
+      # cross 20 numbered manifests. See auto-memory
+      # `feedback_argocd_directory_include_glob.md` for rationale.
+      include: "[01]*.yaml"     # deploys 01-…-09-…-10-…-19-… in numeric order
   destination:
     server: https://kubernetes.default.svc
     namespace: ulysses-demo
