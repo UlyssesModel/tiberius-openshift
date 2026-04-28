@@ -32,9 +32,32 @@
 #   export RH_PULL_SECRET='{"auths":...}'                  # console.redhat.com
 #   ./provision-ulysses-demo-tdx-azure.sh [--yes] [--destroy] [--reset]
 #
+# Capturing output:
+#   ./provision-ulysses-demo-tdx-azure.sh --yes >/tmp/install.log 2>&1   # GOOD
+#   ./provision-ulysses-demo-tdx-azure.sh --yes 2>&1 | tee /tmp/install.log; \
+#     exit ${PIPESTATUS[0]}                                              # GOOD
+#   ./provision-ulysses-demo-tdx-azure.sh --yes | tee /tmp/install.log   # BAD
+#                                                # ↑ tee returns 0 even
+#                                                # if installer errors;
+#                                                # set -o pipefail INSIDE
+#                                                # this script doesn't
+#                                                # reach the outer pipe.
+#
 # ---------------------------------------------------------------------------
 
+# pipefail is part of the -euo pipefail invocation below; controls pipes
+# WITHIN this script. Outer pipes (caller's `| tee` etc.) are not affected
+# — see Capturing output guidance above.
 set -euo pipefail
+
+# Defensive: warn if the script is being piped on the OUTER side. tty test
+# detects stdout-not-attached-to-terminal; that's the OUTER `| tee` /
+# `| less` shape. Doesn't fail (some legitimate uses, e.g., CI redirect to
+# file via `>`), just nudges the user.
+if [[ ! -t 1 ]]; then
+  printf '\033[1;33m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" \
+    "stdout is not a TTY — if you're piping to tee, exit code may be masked. Use redirect (>file 2>&1) or PIPESTATUS." >&2
+fi
 
 # ---------- config knobs --------------------------------------------------
 SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-de1d31bb-a820-4ca9-a72d-280b0f43d961}"
@@ -174,6 +197,38 @@ if (( NEED_PER_VM > DCEV6_AVAIL )); then
   die "DCEV6 quota fit check failed: need ${NEED_PER_VM} for ${MACHINE_TYPE}, have ${DCEV6_AVAIL}.
   Either reduce MACHINE_TYPE (DC2es_v6 = 2 vCPU is the smallest), stop other
   DCEV6 instances, or request quota increase via Azure portal."
+fi
+
+# ---------- 2c. /etc/hosts preflight (warn-only) --------------------------
+# `.local` baseDomain isn't delegatable to public DNS — the laptop running
+# the installer can't resolve `api.<cluster>.<base>` via Azure DNS. Once
+# bootstrap-complete fires, the installer's API-wait gate hangs at DNS
+# NXDOMAIN unless /etc/hosts has an explicit A record pointing at the API
+# LB public IP. We can't auto-add it (sudo + LB IP not available until
+# Azure CAPI provisions the LB mid-install), but surface the WARN early
+# so the operator knows to watch for it. See feedback_etc_hosts_no_wildcard
+# auto-memory for the wildcard trap (* doesn't work in /etc/hosts).
+API_HOST="api.${CLUSTER_NAME}.${DNS_ZONE}"
+if grep -q -- "${API_HOST}" /etc/hosts 2>/dev/null; then
+  log "  /etc/hosts has an entry for ${API_HOST} (good)."
+else
+  warn "/etc/hosts has NO entry for ${API_HOST}."
+  warn "  After Azure CAPI provisions the API LB (~10-15 min into install),"
+  warn "  you'll need to patch /etc/hosts as the installer reaches its"
+  warn "  'Waiting up to 20m0s ... for the Kubernetes API at https://${API_HOST}:6443'"
+  warn "  step. Find the LB IP and append the entry:"
+  warn "    APPS_RG=\$(az group list --query \"[?starts_with(name,'${CLUSTER_NAME}-')].name | [0]\" -o tsv)"
+  warn "    LB_IP=\$(az network public-ip list -g \$APPS_RG --query \"[?contains(name,'pip-v4')].ipAddress | [0]\" -o tsv)"
+  warn "    sudo sh -c \"echo '\$LB_IP ${API_HOST}' >> /etc/hosts\""
+  warn "  AND for browser access (Grafana / OCP Console), patch the apps"
+  warn "  hostnames explicitly (NO wildcards — see feedback_etc_hosts_no_wildcard):"
+  warn "    APPS_IP=\$(oc -n openshift-ingress get svc router-default -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+  warn "    for h in console-openshift-console oauth-openshift \\"
+  warn "             ulysses-grafana-route-grafana-system \\"
+  warn "             prometheus-k8s-openshift-monitoring \\"
+  warn "             thanos-querier-openshift-monitoring; do"
+  warn "      echo \"\$APPS_IP \$h.apps.${CLUSTER_NAME}.${DNS_ZONE}\""
+  warn "    done | sudo tee -a /etc/hosts"
 fi
 
 # ---------- 3. stale install-state guard ----------------------------------
