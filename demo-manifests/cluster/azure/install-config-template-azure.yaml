@@ -1,0 +1,95 @@
+# Template rendered by ../provision-ulysses-demo-tdx-azure.sh.
+# Tokens: __CLUSTER_NAME__ __BASE_DOMAIN__ __REGION__ __MACHINE_TYPE__
+#         __DISK_SIZE__ __SSH_PUBKEY__ __PULL_SECRET__ __DNS_RG__ __ZONE__
+#
+# Shape: Single-Node OpenShift (SNO) on Azure IPI with a TDX-confidential
+# control-plane VM. Unlike the GCP variant (where TDX-VM isn't first-class
+# in install-config and we fall back to plain Kata for per-pod isolation),
+# Azure 4.21.x exposes `controlPlane.platform.azure.settings` natively for
+# `ConfidentialVM` security type — vTPM + SecureBoot + VMGuestState
+# encryption are host-level by IPI, no post-install MachineSet patch
+# needed. The DCesv6 family (Intel Emerald Rapids + TDX) provides the
+# hardware substrate.
+apiVersion: v1
+metadata:
+  name: __CLUSTER_NAME__
+baseDomain: __BASE_DOMAIN__
+
+platform:
+  azure:
+    region: __REGION__
+    # The Azure DNS zone for baseDomain lives in this RG. IPI creates
+    # records here automatically. Pre-created out-of-band by the
+    # provisioning script (kavara-tdx-dns-rg / kavara-azure.local).
+    baseDomainResourceGroupName: __DNS_RG__
+    outboundType: Loadbalancer
+    cloudName: AzurePublicCloud
+
+# SNO topology — one master, zero workers. Master is the TDX-confidential
+# VM; the demo workload (Polygon ingest, Kafka, ulysses-sor, etc.) runs
+# on the same node, getting both host-level TDX protection (the master
+# is in a Trust Domain) AND per-pod Kata-CC-TDX wrapping for finer-grain
+# attestation.
+controlPlane:
+  name: master
+  replicas: 1
+  architecture: amd64
+  hyperthreading: Enabled
+  platform:
+    azure:
+      type: __MACHINE_TYPE__
+      zones:
+        - "__ZONE__"
+      osDisk:
+        diskSizeGB: __DISK_SIZE__
+        diskType: Premium_LRS
+        # VMGuestStateOnly: encrypt only the VM-guest-state blob, not
+        # the full OS disk. Lighter setup; doesn't require a Customer-
+        # Managed-Key DiskEncryptionSet. Switch to DiskWithVMGuestState
+        # if full-disk encryption is needed (additional CMK + DES setup
+        # — see installconfig.controlPlane.platform.azure.osDisk.
+        # diskEncryptionSet schema for fields).
+        securityProfile:
+          securityEncryptionType: VMGuestStateOnly
+      settings:
+        # ConfidentialVM = TDX (Intel) or SEV-SNP (AMD), determined by
+        # the chosen VM SKU family. DCesv6 = Intel TDX. DCasv6 = AMD
+        # SEV-SNP (not used here; see project_peer_pods_subproject memory
+        # for the AMD path on GCP if you ever pivot).
+        securityType: ConfidentialVM
+        confidentialVM:
+          uefiSettings:
+            secureBoot: Enabled
+            # VMGuestStateOnly REQUIRES vTPM = Enabled per the OCP
+            # 4.21 schema; DiskWithVMGuestState requires both
+            # SecureBoot AND vTPM Enabled. We have both.
+            virtualizedTrustedPlatformModule: Enabled
+
+compute:
+  - name: worker
+    replicas: 0
+    architecture: amd64
+    hyperthreading: Enabled
+    platform:
+      azure:
+        type: __MACHINE_TYPE__
+
+networking:
+  networkType: OVNKubernetes
+  machineNetwork:
+    - cidr: 10.0.0.0/16
+  clusterNetwork:
+    - cidr: 10.128.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - 172.30.0.0/16
+
+# credentialsMode left unset → Mint mode (the default). Mint mode requires
+# the SP at ~/.azure/osServicePrincipal.json to have BOTH Contributor AND
+# User Access Administrator on the subscription. The provisioning script
+# verifies this in preflight; if you see a "Manual mode is a trap" warning
+# similar to the GCP install, fix the role assignments rather than switching
+# to Manual.
+
+pullSecret: '__PULL_SECRET__'
+sshKey: __SSH_PUBKEY__

@@ -4,6 +4,7 @@
 # CAPI envtest secrets. Never commit any of this.
 # =====================================================================
 /cluster/ulysses-demo-install/
+/cluster/ulysses-tdx-demo-install/
 
 # Belt-and-braces in case install state lands outside the canonical dir
 .openshift_install*
