@@ -147,9 +147,7 @@ spec:
   resources:
     requests:
       storage: 5Gi
-  # ssd-csi was set as the cluster default in cluster/02-kafka-cluster.yaml
-  # work; pd-standard isn't compatible with c3-standard-44 hosts.
-  storageClassName: ssd-csi
+  storageClassName: managed-csi
 ---
 # The Grafana instance. Operator deploys a Deployment + Service + Route
 # automatically. PVC mounted at /var/lib/grafana so datasource config

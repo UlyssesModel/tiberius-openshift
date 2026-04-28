@@ -51,6 +51,13 @@ spec:
     topicOperator: {}
     userOperator: {}
 ---
+# Storage class is substrate-dependent and tracked here as the Azure default
+# (`managed-csi`, the default StorageClass on OCP-on-Azure IPI clusters). The
+# GCP `ulysses-demo` cluster uses `ssd-csi` (Cloud SSD) — applied via Argo
+# `ignoreDifferences` rather than committing two variants of this file.
+# Confirm on a fresh cluster with `oc get sc`; the default StorageClass is the
+# right choice unless there's a specific reason to pin to a slower / cheaper
+# tier.
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaNodePool
 metadata:
@@ -64,7 +71,7 @@ spec:
   storage:
     type: persistent-claim
     size: 10Gi
-    class: ssd-csi
+    class: managed-csi
     deleteClaim: false
 ---
 apiVersion: kafka.strimzi.io/v1beta2
@@ -80,15 +87,15 @@ spec:
   storage:
     type: persistent-claim
     size: 100Gi
-    class: ssd-csi
+    class: managed-csi
     deleteClaim: false
   resources:
     requests:
+      cpu: "500m"
+      memory: 2Gi
+    limits:
       cpu: "2"
       memory: 4Gi
-    limits:
-      cpu: "4"
-      memory: 8Gi
 ---
 # Input: raw trades coming off Polygon. 12 partitions = 12 consumer parallelism.
 apiVersion: kafka.strimzi.io/v1beta2

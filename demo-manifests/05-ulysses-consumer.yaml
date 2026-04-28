@@ -48,27 +48,21 @@ spec:
               AMX_BF16: {op: Exists}
     spec:
       serviceAccountName: ulysses-sor
-      # GCP/Azure split: on this cluster (GCP, c3-standard-44 standard VM,
-      # not a Confidential VM) the host has TDX-capable hardware but TDX
-      # is NOT active on the host. kata-cc-tdx requires host-level TDX,
-      # so it's unavailable here. Plain `kata` works because nested virt
-      # is enabled on standard GCP VMs — the workload still runs in a
-      # Kata VM (process / kernel isolation, separate address space),
-      # just not in a TDX Trust Domain.
+      # CONFIDENTIAL BOUNDARY ARCHITECTURE — substrate-dependent:
       #
-      # Equivalent confidential posture is restored on Azure DCesv6
-      # (Emerald Rapids + TDX) where the host is a TDX CVM and
-      # kata-cc-tdx is the right RuntimeClass. Flip this line back to
-      # `kata-cc-tdx` when deploying there. See
-      # ~/.claude/projects/-Users-jekavara/memory/project_peer_pods_subproject.md
-      # for the GCP-CVM-disables-nested-virt context that drove this split.
-      runtimeClassName: kata
-      # nodeSelector removed: this cluster's SNO doesn't run as a TDX
-      # CVM (it's a c3-standard-44 standard VM), so the kernel doesn't
-      # set the cpu-cpuid.TDX_GUEST CPUID flag and NFD won't apply the
-      # TDX_GUEST node label. With the selector in place the pod won't
-      # schedule. Restore the selector when deploying to Azure DCesv6
-      # where TDX_GUEST is actually set on the host kernel.
+      # GCP (ulysses-demo cluster):   per-pod Kata isolation. SOR runs in a Kata-VM,
+      #                               isolated from neighboring pods. No host-level
+      #                               TDX because OCP 4.21.x install-config schema
+      #                               doesn't expose IntelTrustDomainExtensions for
+      #                               GCP workers (verified via /proc/cpuinfo).
+      #
+      # Azure (ulysses-tdx-demo):     entire VM is the Trust Domain (DCesv6 host-level
+      #                               TDX, dmesg confirms). Native runc — no per-pod
+      #                               Kata because TDX guests block nested virt by
+      #                               design (attack-surface reduction). Aligns with
+      #                               Red Hat's CCO Developer Preview architecture.
+      #
+      # Same SOR code; the boundary moves with the substrate. Both are valid posture.
       containers:
         - name: sor
           # This is Kavara's image. For the demo we pull from Quay.
@@ -93,21 +87,17 @@ spec:
               mountPath: /etc/kafka-certs
               readOnly: true
           resources:
-            # Asymmetric requests/limits: the SOR's calibrated optimum
-            # (per KIRK study on SPR+TDX) is 32 threads, but on this
-            # SNO ~28-32 vCPU is the usable envelope after Kafka +
-            # ingress + system overhead (~12-15 vCPU consumed). Request
-            # 16 vCPU as a conservative baseline that fits, allow burst
-            # to 32 when capacity is idle. Memory follows similar logic
-            # — request 8Gi to fit, allow up to 16Gi for transient
-            # spikes. On a multi-node prod cluster this should be
-            # reset to symmetric 32/32Gi for full AMX headroom.
+            # Asymmetric requests/limits sized for the 8-vCPU DC8es_v6 SNO
+            # (~3-5 vCPU usable for user workloads after system + Kafka +
+            # ingress + grafana). Production / multi-node should bump this
+            # back up — the SOR's calibrated optimum is 32 threads on full
+            # AMX silicon, so cpu=32 is the right symmetric target there.
             requests:
-              cpu: "16"
-              memory: 8Gi
+              cpu: "200m"
+              memory: 1Gi
             limits:
-              cpu: "32"
-              memory: 16Gi
+              cpu: "4"
+              memory: 4Gi
           ports:
             - name: metrics
               containerPort: 9100

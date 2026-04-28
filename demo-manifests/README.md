@@ -28,7 +28,18 @@ consumed** off the `market.equities.trades` topic, **0.836 entropy
 messages/sec emitted** at steady state on a 12-second emission cadence,
 **~1 ms p95 window-compute latency** in the SOR's per-window entropy
 calculation, all 14 keynote-relevant Grafana panels populated in the OCP
-Console dashboard. The primary entry point is
+Console dashboard. A second cluster (`ulysses-tdx-demo`, infraID
+`k8brw`, machine type `Standard_DC16es_v6` in Azure `westus3` zone 3)
+was provisioned on **2026-04-27** and verified on **2026-04-28** as the
+**TDX-attested counterpart** — same pipeline, host-level Intel TDX
+Trust Domain via Azure ConfidentialVM (`Memory Encryption Features
+active: Intel TDX` confirmed in `dmesg` + CPUID brand-string
+`InteTD X   l` interleaving visible from inside the SOR pod). The two
+clusters tell complementary stories: GCP demonstrates per-pod Kata
+isolation on a non-confidential host; Azure demonstrates host-level
+TDX with native runc (TDX guests block nested virt, so per-pod Kata
+isn't a viable path on DCesv6 — see Gotcha #12 below). The Azure
+provisioning recipe lives under `cluster/azure/`. The primary entry point is
 [`DEPLOY_WITH_CLAUDE_CODE.md`](DEPLOY_WITH_CLAUDE_CODE.md), a step-by-step
 runbook designed to be driven via Claude Code as a natural-language
 operator: each step is a command Claude proposes, runs, interprets, and
@@ -86,6 +97,20 @@ ArgoCD is wired as observer (auto-sync off). The following resources show OutOfS
 | `Deployment/ulysses-sor` | Rolling-update artifact from yesterday's iterative debugging. `dcls7` pod is the actual healthy SOR (running 20h+, producing entropy live). New ReplicaSet pods can't fit on SNO at 16-CPU sizing. | `oc rollout restart` after current pod state is stable, or scale-up the SNO. |
 
 All three live measurements (1.5M trades, 0.873 entropies/s, 1ms p95 window compute) reflect this exact cluster state. The OutOfSync count is GitOps hygiene work, not a functional issue.
+
+## Known operational gotchas
+
+The full list lives in the project's Confluence "painful gotchas"
+table; the entries below are the ones added during the Azure
+`ulysses-tdx-demo` build (2026-04-27/28). Each links to an
+auto-memory file with the failing-symptom, root cause, and applied
+fix.
+
+| # | Symptom | Root cause | Applied fix |
+|---|---|---|---|
+| 10 | OCP IPI install on Azure runs ~60 min, then both bootstrap + master VMs report `ProvisioningState/failed/OverconstrainedZonalAllocationRequest`. The downstream installer error is a misleading DNS lookup failure for the cluster API. | DCesv6 (Intel TDX) SKUs aren't uniformly distributed across Azure availability zones — TDX silicon is racked in specific zones per region. As of 2026-04-27, `Standard_DC8es_v6` in `westus3` is available in **zone 3 only**. Pinning the wrong zone burns the full installer wall-clock before failing. | Preflight zone fit at SKU granularity in `cluster/azure/provision-ulysses-demo-tdx-azure.sh`: `az vm list-skus --location $REGION --size $MACHINE_TYPE --query "[].locationInfo[0].zones[]"` — die before installer if `$ZONE` isn't in the returned set. |
+| 11 | TDX activation verification scripts using `grep tdx /proc/cpuinfo` return no matches on the master node, suggesting TDX isn't active. | RHCOS 9.x ships kernel 5.14, which doesn't backport the textual `tdx_guest` cpufeature flag (added upstream in 5.19). The `/sys/firmware/coco/` CoCo-subsystem path is also absent. **TDX is genuinely active** — kernel detection just isn't surfaced textually on this kernel. | Verify via the load-bearing signals instead: `dmesg` shows `Memory Encryption Features active: Intel TDX` + `systemd[1]: Detected confidential virtualization tdx`; `/proc/cpuinfo` `model name` reads as `InteTD X   l` (Azure's TDX brand-string injection); NFD applies `feature.node.kubernetes.io/cpu-cpuid.TDX_GUEST=true` and `cpu-security.tdx.protected=true` (NFD does its own cpuid query independent of `/proc/cpuinfo`). |
+| 12 | On Azure DCesv6, plain `kata` runtime fails every pod with `FailedCreatePodSandBox: rpc error: code = DeadlineExceeded`, even with abundant CPU/memory headroom. | TDX guests do not expose VMX/KVM (`grep -c vmx /proc/cpuinfo` → 0; `/dev/kvm` absent) — nested virt is blocked by design as part of the Trust Domain attack-surface reduction. Kata needs KVM to spin its inner VM; without it, sandbox creation deadlines out. | **Substrate dictates the per-pod runtime.** On Azure DCesv6 omit `runtimeClassName` (use `runc`) — the host VM is itself the Trust Domain, so the confidential boundary is at the VM layer, not the pod layer. On GCP `c3-standard-44` (non-CVM, nested virt available, but no host-TDX) keep `runtimeClassName: kata` for per-pod isolation. The two patterns are complementary, not competing — see comment block in `05-ulysses-consumer.yaml`. For per-pod confidential containers on TDX hosts, the path is the Confidential Containers Operator (CCO, dev-preview as of 2026-04-27) which uses peer-pods to avoid nested virt; tracked separately. |
 
 ## Phase 2 polish (deferred from 2026-04-26)
 
