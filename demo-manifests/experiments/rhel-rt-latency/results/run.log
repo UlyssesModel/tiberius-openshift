@@ -1,0 +1,94 @@
+=== AMX ISA-ceiling sweep — 28 cells ===
+  output: /tmp/sweep/sweep.csv (per-call), /tmp/sweep/sweep_summary.csv (per-cell), /tmp/sweep/onednn_verbose_sample.txt (one cell)
+
+--- default-kernel cells (taskset -c 4) ---
+[14:11:00] cell N64-amx-on-default             ... [FULL] N64-amx-on-default: n=10000 p50=23.0us p95=26.4us p99=31.5us p99.9=37.8us max=43.2us mean=23.4us
+[14:11:02] cell N64-amx-off-default            ... [FULL] N64-amx-off-default: n=10000 p50=39.6us p95=46.7us p99=48.2us p99.9=56.2us max=63.8us mean=40.3us
+[14:11:04] cell N128-amx-on-default            ... [FULL] N128-amx-on-default: n=10000 p50=32.7us p95=39.7us p99=43.0us p99.9=52.1us max=65.9us mean=33.4us
+[14:11:05] cell N128-amx-off-default           ... [FULL] N128-amx-off-default: n=10000 p50=160.4us p95=171.6us p99=174.3us p99.9=182.0us max=194.7us mean=162.5us
+[14:11:08] cell N256-amx-on-default            ... [FULL] N256-amx-on-default: n=10000 p50=84.6us p95=99.5us p99=106.9us p99.9=120.5us max=209.2us mean=86.7us
+[14:11:11] cell N256-amx-off-default           ... [FULL] N256-amx-off-default: n=10000 p50=1123.6us p95=1133.6us p99=1140.7us p99.9=1237.3us max=1382.4us mean=1124.6us
+[14:11:23] cell N512-amx-on-default            ... [FULL] N512-amx-on-default: n=10000 p50=553.9us p95=570.2us p99=582.2us p99.9=699.1us max=965.0us mean=553.2us
+[14:11:30] cell N512-amx-off-default           ... [FULL] N512-amx-off-default: n=10000 p50=8992.0us p95=9357.8us p99=9377.1us p99.9=9434.2us max=9928.5us mean=9061.9us
+[14:13:03] cell N1024-amx-on-default           ... [FULL] N1024-amx-on-default: n=10000 p50=4898.7us p95=5307.1us p99=5449.6us p99.9=5670.6us max=6562.3us mean=4951.1us
+[14:13:54] cell N1024-amx-off-default          ... [CAPPED] N1024-amx-off-default: n=1707 p50=70275.3us p95=70759.3us p99=71368.3us p99.9=71992.4us max=72116.5us mean=70312.9us
+[14:16:03] cell N2048-amx-on-default           ... [CAPPED] N2048-amx-on-default: n=2810 p50=43272.2us p95=44059.9us p99=44617.9us p99.9=47473.7us max=49440.1us mean=42705.2us
+[14:18:07] cell N2048-amx-off-default          ... [CAPPED] N2048-amx-off-default: n=213 p50=563300.6us p95=571097.3us p99=571327.3us p99.9=572342.0us max=572342.0us mean=564969.4us
+[14:21:05] cell N4096-amx-on-default           ... [CAPPED] N4096-amx-on-default: n=281 p50=427851.0us p95=458758.3us p99=464353.6us p99.9=468322.7us max=468322.7us mean=427165.5us
+[14:23:27] cell N4096-amx-off-default          ... [CAPPED] N4096-amx-off-default: n=27 p50=4503013.6us p95=4508340.6us p99=4509150.8us p99.9=4509150.8us max=4509150.8us mean=4503749.6us
+
+--- rt-fifo cells (sudo -E chrt -f 80 taskset -c 4) ---
+[14:33:00] cell N64-amx-on-rt-fifo             ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N64-amx-on-rt-fifo: n=10000 p50=22.8us p95=26.4us p99=31.5us p99.9=37.3us max=45.2us mean=23.2us
+[14:33:02] cell N64-amx-off-rt-fifo            ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N64-amx-off-rt-fifo: n=10000 p50=39.6us p95=46.9us p99=48.6us p99.9=57.3us max=61.5us mean=40.3us
+[14:33:04] cell N128-amx-on-rt-fifo            ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N128-amx-on-rt-fifo: n=10000 p50=33.1us p95=40.2us p99=43.6us p99.9=54.7us max=184.4us mean=33.6us
+[14:33:05] cell N128-amx-off-rt-fifo           ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N128-amx-off-rt-fifo: n=10000 p50=160.0us p95=172.0us p99=175.4us p99.9=184.0us max=195.8us mean=162.1us
+[14:33:08] cell N256-amx-on-rt-fifo            ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N256-amx-on-rt-fifo: n=10000 p50=82.6us p95=96.1us p99=106.2us p99.9=119.3us max=172.0us mean=85.5us
+[14:33:11] cell N256-amx-off-rt-fifo           ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N256-amx-off-rt-fifo: n=10000 p50=1124.7us p95=1136.0us p99=1145.3us p99.9=1175.8us max=1225.2us mean=1126.1us
+[14:33:23] cell N512-amx-on-rt-fifo            ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N512-amx-on-rt-fifo: n=10000 p50=560.7us p95=580.9us p99=615.2us p99.9=748.8us max=921.2us mean=561.1us
+[14:33:30] cell N512-amx-off-rt-fifo           ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N512-amx-off-rt-fifo: n=10000 p50=8817.9us p95=8873.2us p99=9334.9us p99.9=9540.5us max=9600.4us mean=8831.6us
+[14:35:01] cell N1024-amx-on-rt-fifo           ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[FULL] N1024-amx-on-rt-fifo: n=10000 p50=4934.2us p95=5324.8us p99=5370.6us p99.9=5483.6us max=6619.4us mean=4991.0us
+[14:35:53] cell N1024-amx-off-rt-fifo          ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[CAPPED] N1024-amx-off-rt-fifo: n=1694 p50=70409.0us p95=73199.3us p99=73712.4us p99.9=73926.1us max=73964.6us mean=70866.0us
+[14:38:01] cell N2048-amx-on-rt-fifo           ... [CAPPED] N2048-amx-on-rt-fifo: n=2772 p50=43559.6us p95=44977.0us p99=45464.4us p99.9=46611.2us max=48384.9us mean=43283.8us
+[14:40:05] cell N2048-amx-off-rt-fifo          ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[CAPPED] N2048-amx-off-rt-fifo: n=214 p50=561569.2us p95=570624.9us p99=574075.8us p99.9=578720.7us max=578720.7us mean=562875.4us
+[14:43:03] cell N4096-amx-on-rt-fifo           ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[CAPPED] N4096-amx-on-rt-fifo: n=279 p50=427834.0us p95=456789.3us p99=468478.2us p99.9=474290.7us max=474290.7us mean=430641.1us
+[14:45:27] cell N4096-amx-off-rt-fifo          ... /usr/local/lib64/python3.11/site-packages/torch/_subclasses/functional_tensor.py:295: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[CAPPED] N4096-amx-off-rt-fifo: n=27 p50=4511052.5us p95=4535573.2us p99=4544759.5us p99.9=4544759.5us max=4544759.5us mean=4514963.3us
+
+=== summary ===
+cell_id                N     isa      kernel   n_samples  p50_us       p95_us       p99_us       p999_us      max_us       mean_us
+N64-amx-on-default     64    amx-on   default  10000      22.958       26.426       31.459       37.822       43.217       23.370
+N64-amx-off-default    64    amx-off  default  10000      39.569       46.664       48.230       56.168       63.767       40.264
+N128-amx-on-default    128   amx-on   default  10000      32.741       39.660       42.978       52.113       65.920       33.362
+N128-amx-off-default   128   amx-off  default  10000      160.420      171.551      174.284      181.978      194.682      162.483
+N256-amx-on-default    256   amx-on   default  10000      84.555       99.474       106.917      120.493      209.160      86.736
+N256-amx-off-default   256   amx-off  default  10000      1123.579     1133.590     1140.721     1237.268     1382.417     1124.623
+N512-amx-on-default    512   amx-on   default  10000      553.878      570.196      582.224      699.110      964.970      553.199
+N512-amx-off-default   512   amx-off  default  10000      8991.998     9357.795     9377.124     9434.183     9928.502     9061.915
+N1024-amx-on-default   1024  amx-on   default  10000      4898.653     5307.066     5449.586     5670.620     6562.329     4951.111
+N1024-amx-off-default  1024  amx-off  default  1707       70275.344    70759.345    71368.283    71992.360    72116.518    70312.911
+N2048-amx-on-default   2048  amx-on   default  2810       43272.172    44059.861    44617.879    47473.695    49440.087    42705.169
+N2048-amx-off-default  2048  amx-off  default  213        563300.580   571097.282   571327.310   572341.975   572341.975   564969.359
+N4096-amx-on-default   4096  amx-on   default  281        427850.964   458758.290   464353.599   468322.719   468322.719   427165.524
+N4096-amx-off-default  4096  amx-off  default  27         4503013.629  4508340.634  4509150.770  4509150.770  4509150.770  4503749.567
+N64-amx-on-rt-fifo     64    amx-on   rt-fifo  10000      22.775       26.422       31.525       37.291       45.197       23.214
+N64-amx-off-rt-fifo    64    amx-off  rt-fifo  10000      39.565       46.943       48.588       57.316       61.494       40.292
+N128-amx-on-rt-fifo    128   amx-on   rt-fifo  10000      33.147       40.224       43.586       54.739       184.363      33.608
+N128-amx-off-rt-fifo   128   amx-off  rt-fifo  10000      159.982      172.036      175.423      184.022      195.781      162.124
+N256-amx-on-rt-fifo    256   amx-on   rt-fifo  10000      82.646       96.057       106.174      119.312      172.029      85.453
+N256-amx-off-rt-fifo   256   amx-off  rt-fifo  10000      1124.703     1136.040     1145.289     1175.773     1225.190     1126.121
+N512-amx-on-rt-fifo    512   amx-on   rt-fifo  10000      560.749      580.858      615.160      748.806      921.181      561.054
+N512-amx-off-rt-fifo   512   amx-off  rt-fifo  10000      8817.924     8873.171     9334.855     9540.508     9600.438     8831.576
+N1024-amx-on-rt-fifo   1024  amx-on   rt-fifo  10000      4934.176     5324.820     5370.570     5483.561     6619.397     4991.023
+N1024-amx-off-rt-fifo  1024  amx-off  rt-fifo  1694       70409.042    73199.309    73712.392    73926.148    73964.550    70866.017
+N2048-amx-on-rt-fifo   2048  amx-on   rt-fifo  2772       43559.551    44976.989    45464.391    46611.152    48384.866    43283.824
+N2048-amx-off-rt-fifo  2048  amx-off  rt-fifo  214        561569.217   570624.912   574075.844   578720.728   578720.728   562875.362
+N4096-amx-on-rt-fifo   4096  amx-on   rt-fifo  279        427833.998   456789.345   468478.151   474290.693   474290.693   430641.133
+N4096-amx-off-rt-fifo  4096  amx-off  rt-fifo  27         4511052.528  4535573.246  4544759.517  4544759.517  4544759.517  4514963.313
+
+amx_bf16 dispatches in verbose log: 2822
+rows in per-call CSV: 190025

@@ -1,34 +1,126 @@
-# RHEL-RT latency characterisation — Ulysses SOR `compute_entropy()`
+# RHEL-RT latency characterisation — Ulysses SOR `compute_entropy()` + AMX
 
-Two-shape benchmark of the SOR window-compute under PREEMPT_RT on Sapphire
-Rapids: a **production-cadence** profile (window=512, embed=32, ~8 emissions/sec
-matching `WINDOW_SECONDS=12` in `image/consumer.py`) and a **saturation-cadence**
-profile (window=32, embed=8, back-to-back, matching the InferenceService request
-shape from `11-kserve-inference.yaml`). Same compute math; different shapes;
-both measured on the same host.
+PREEMPT_RT bench dir. Two experiment scopes have run on the same host
+(`ulysses-rt-bench`, GCP `c3-standard-8` SPR + AMX):
+
+1. **Phase 3B** — `compute_entropy()` itself, both production-cadence
+   (window=512, embed=32) and saturation-cadence (window=32, embed=8).
+   Findings inline below; the load-bearing claim is the **94 %**
+   pipeline-vs-compute finding for the demo cluster's reported latency.
+
+2. **Phase 3B-followup — AMX ISA-ceiling sweep.** 28-cell factorial
+   crossing N {64..4096} × ISA {amx-on, amx-off} × kernel {default,
+   rt-fifo}. Closes hypothesis **H5** (AMX tile save/restore RT-clean).
+   **Findings:** `RESULTS.md` (in this directory).
 
 ## TL;DR
 
-**Saturation-cadence (32-tick window, the InferenceService shape):**
-
+**Phase 3B saturation-cadence (32-tick window):**
 > p99.9 = 66 µs single-thread; max < 110 µs under RT-FIFO + isolation;
 > jitter (stddev) 3.5 µs.
 
-**Production-cadence (512-tick window, the Kafka-consumer shape):**
+**Phase 3B production-cadence (512-tick window):**
+> p99.9 = 316 µs at the 8 emissions/sec production rate.
 
-> p99.9 = 316 µs at the 8 emissions/sec production rate (full `WINDOW_SECONDS=12`
-> emit cadence).
+**Phase 3B-followup AMX sweep (see `RESULTS.md`):**
+> H5 confirmed (AMX RT-clean under chrt-FIFO + isolated cores, single-thread);
+> peak AMX speedup vs BF16+AVX-512 baseline = 16.2× at N=512 on this SPR substrate.
 
-The two shapes measure complementary properties: saturation throughput +
-sustained tail behaviour (32-tick) vs single-emission latency floor with
-realistic per-call work (512-tick). Both confirm hypothesis **H4** from the
-E6 RT spec — *tail latency tightens under RT, median is flat or worse* —
-which is the load-bearing claim for the autonomous-systems / regulated-
-workload pitch.
+## Two provisioning paths
+
+`provision.sh` was originally written for the Phase 3B production-cadence
+bench, which consumes a live Kafka topic (`market.equities.trades`). It
+therefore has dependencies the Phase 3B-followup AMX sweep does not need.
+
+### Full path — Phase 3B production-cadence
+
+```bash
+./provision.sh
+```
+
+Requires:
+- `gcloud` authenticated as a principal with Compute Admin in
+  `office-of-cto-491318`
+- `oc` authenticated against the `ulysses-demo` GCP demo cluster
+  (`KUBECONFIG` pointing at `cluster/ulysses-demo-install/auth/kubeconfig`)
+
+What it does:
+1. Creates a `KafkaUser` (`rt-bench`) on the `ulysses-demo` cluster with
+   read-only ACL on `market.equities.*`
+2. Creates the GCP VM (`c3-standard-8`, CentOS Stream 9)
+3. Installs `kernel-rt`, `tuned-profiles-realtime`, `python3.11`,
+   `numpy`, `confluent-kafka`
+4. Configures `isolcpus=2-7`, `intel_pstate=disable`, `idle=poll`, etc.
+   via `grubby`
+5. Reboots into the RT kernel
+6. Pushes mTLS material (`ca.crt`, `user.crt`, `user.key`) for Kafka access
+7. Pushes `bench.py` (production-cadence harness)
+
+`./provision.sh teardown` deletes the VM and the `KafkaUser`.
+
+### Slim path — Phase 3B-followup AMX sweep
+
+The AMX sweep is a pure-compute benchmark — no Kafka dependency. The
+`oc`/Kafka steps in `provision.sh` are not required. For a quick re-run
+without the cluster dependency:
+
+```bash
+PROJECT=office-of-cto-491318
+ZONE=us-central1-a
+VM=ulysses-rt-bench
+
+# 1) VM
+gcloud compute instances create "$VM" \
+  --project="$PROJECT" --zone="$ZONE" --machine-type=c3-standard-8 \
+  --image-family=centos-stream-9 --image-project=centos-cloud \
+  --boot-disk-size=50GB --boot-disk-type=pd-balanced
+
+# 2) kernel-rt + tuning + python3.11 + torch (CPU build)
+gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap \
+  --command='
+    sudo dnf -y install dnf-plugins-core
+    sudo dnf config-manager --set-enabled crb rt
+    sudo dnf -y install kernel-rt kernel-rt-core tuned-profiles-realtime \
+      numactl util-linux-core python3.11 python3.11-pip
+    echo "isolated_cores=2-7" | sudo tee /etc/tuned/realtime-variables.conf
+    sudo systemctl enable --now tuned
+    sudo tuned-adm profile realtime
+    sudo grubby --update-kernel=ALL --args="intel_pstate=disable processor.max_cstate=1 idle=poll skew_tick=1 audit=0 nosoftlockup mce=off"
+    sudo grubby --set-default=$(ls /boot/vmlinuz-*+rt | head -1)
+    sudo python3.11 -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+    sudo systemctl reboot
+  ' || true   # SSH drops on reboot — expected
+
+# Wait for RT kernel to come up
+until gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap \
+        --quiet --command='grep -q PREEMPT_RT /proc/version' 2>/dev/null; do
+  sleep 12
+done
+
+# 3) Stage harness + sweep wrapper
+gcloud compute scp bench_amx_sweep.py sweep.sh "$VM":/tmp/ \
+  --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap
+
+# 4) Run
+gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap \
+  --command='chmod +x /tmp/sweep.sh && /tmp/sweep.sh'
+
+# 5) Pull results
+mkdir -p results
+gcloud compute scp --recurse "$VM":/tmp/sweep/ ./results/ \
+  --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap
+
+# Teardown when done
+gcloud compute instances delete "$VM" --zone="$ZONE" --project="$PROJECT" --quiet
+```
+
+Any future bench in this dir that doesn't need Kafka should follow the slim
+path — the `oc` dependency in `provision.sh` is the most fragile part of
+the original (KUBECONFIG shadowing, stale-cluster traps).
 
 ## Methodology
 
-### Workload — same `compute_entropy()` in both bench shapes
+### Workload — same `compute_entropy()` in both Phase 3B bench shapes
 
 `compute_entropy()` from `image/consumer.py`, byte-identical: log-returns →
 sliding-window delay-coordinate embedding → Gram matrix → normalize to trace
@@ -36,6 +128,14 @@ sliding-window delay-coordinate embedding → Gram matrix → normalize to trace
 embed_dim)` tuples engage different LAPACK paths but the kernel preemption +
 scheduling characteristics are the load-bearing measurement, not the LAPACK
 ceiling.
+
+### Workload — AMX sweep (Phase 3B-followup)
+
+`torch.matmul(A, B)` with A, B square BF16 tensors of shape (N, N).
+Different code path than Phase 3B (PyTorch + oneDNN BRGEMM, not numpy +
+LAPACK). The compute math is the matmul itself; eigvalsh would not engage
+AMX and is therefore not the right primitive to test H5 with. See
+`RESULTS.md` for the full methodology + ONEDNN_VERBOSE dispatch attestation.
 
 ### Why synthetic input
 
@@ -48,6 +148,9 @@ per-call latency distributions. Synthetic input lets the bench replay
 deterministically across runs and removes the dependency on the live
 cluster's Kafka topic state.
 
+The same shape-not-value argument applies to `torch.matmul` BF16: at fixed
+N, BRGEMM converges deterministically.
+
 ### Why CentOS Stream 9, not RHEL 9
 
 Cloud Access subscriptions don't include the RHEL Real Time add-on, and
@@ -58,21 +161,19 @@ architectural claim — "Kavara latency under PREEMPT_RT kernel" — is
 substrate-agnostic. Migrate to RHEL-RT once entitlement lands and the
 procurement framing requires "Red Hat-supported" specifically.
 
-### Kernel + tuning (encoded in `provision.sh`)
+### Kernel + tuning
 
 - **Host**: GCP `c3-standard-8` (Sapphire Rapids, 8 vCPU, AMX-capable —
   confirmed via `amx_bf16 amx_int8 amx_tile` flags in `/proc/cpuinfo`)
 - **OS**: CentOS Stream 9, `kernel-rt-5.14.0-697.el9.x86_64+rt`
   (`CONFIG_PREEMPT_RT=y`, `/sys/kernel/realtime == 1`)
-- **Boot args**: `isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7`
+- **Boot args**: `isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7
+  intel_pstate=disable processor.max_cstate=1 idle=poll skew_tick=1
+  audit=0 nosoftlockup mce=off`
 - **Sysctl**: `kernel.timer_migration=0`, `kernel.sched_rt_runtime_us=-1`,
   `vm.stat_interval=10`
-- **Bench process** (saturation-cadence): one of three placement configs
-  per the comparison table below
-- **Bench process** (production-cadence): `taskset -c 2-7 chrt -f 80
-  python3.11 bench.py` (SCHED_FIFO 80, pinned to all isolated cores)
 
-## Saturation-cadence results (the headline)
+## Phase 3B saturation-cadence results
 
 Three placement configs, 30 s wall-clock each, single-threaded
 `compute_entropy()` back-to-back, 32-tick window, embed_dim=8.
@@ -90,31 +191,14 @@ Three placement configs, 30 s wall-clock each, single-threaded
 |   mean (ns) |       51,254 |       51,845 |       51,617 |
 |  **stddev (ns)** |        **3,854** |        **3,608** |        **3,550** |
 
-- `default` — no taskset, no chrt; runs on housekeeping CPUs 0–1
-- `pinned` — `taskset -c 4` (one isolated CPU)
-- `rt-fifo` — `chrt -f 50 taskset -c 4` (real-time FIFO + isolated CPU)
-
-Raw per-call CSVs: `results/default.csv`, `results/pinned.csv`,
-`results/rt-fifo.csv` (~10 MB each, ~470 K rows). Aggregated stats:
-`results/comparison.csv`.
-
-### Reading the saturation-cadence data
-
-**Median throughput is invariant across configs** (15.55–15.69 K calls/sec).
-PREEMPT_RT is already delivering bounded scheduling at the kernel level
-— p50/p95/p99 are within 1 % across all three configs. The RT-FIFO +
+`max` drops 41 % under isolation; jitter (stddev) tightens 8 % under
+RT-FIFO; median throughput invariant across configs. The RT-FIFO +
 isolation knobs add only marginal tail tightening at the very high
-percentiles.
+percentiles — PREEMPT_RT is already delivering bounded scheduling at the
+kernel level. **H4 (E6 spec) confirmed** — tail latency tightens under RT,
+median flat or worse.
 
-**Where pinning + FIFO actually pay off: the tail.**
-
-- `max` drops **41 %** (174 µs → 103 µs) the moment you isolate to CPU 4,
-  then holds flat under FIFO
-- `p99.99` drops **6 %** (79 µs → 74 µs) under FIFO
-- `stddev` (jitter) tightens **8 %** (3,854 ns → 3,550 ns) — the RT
-  promise of bounded jitter delivered
-
-## Production-cadence results (the floor)
+## Phase 3B production-cadence results
 
 Window=512, embed_dim=32, 100 synthetic tickers at 10 prices/sec/ticker,
 window emission every 12 s — 8 emissions/sec aggregate, 14,500 measured
@@ -124,20 +208,13 @@ window-computes over 1,800 s steady state with 60 s warmup. Single config
 ```
 samples         : 14500
 p50             : 0.1474 ms (147 µs)
-p90             : 0.1585 ms (159 µs)
 p95             : 0.1665 ms (167 µs)
 p99             : 0.2846 ms (285 µs)
-p99.5           : 0.3004 ms (300 µs)
 p99.9           : 0.3163 ms (316 µs)
 p99.99          : 0.3416 ms (342 µs)
-min             : 0.1263 ms
-max             : 1.0807 ms
+max             : 1.0807 ms (single-sample outlier; n=1/14500)
 mean            : 0.1504 ms
 std             : 0.0189 ms
-
-samples > 1.0 ms: 1 (0.007%)  — single outlier
-samples > 500 µs: 1 (0.007%)
-samples > 300 µs: 74 (0.510%)
 ```
 
 The single >1 ms outlier is exactly one sample (n=1/14500) — likely an RCU
@@ -145,109 +222,47 @@ callback or NMI on the isolated cores during the 30-min observation window.
 0.007 % tail probability; the next-worst sample sits at p99.99 = 0.342 ms,
 well-bounded.
 
-Raw CSV: `results.csv` (top-level, 506 KB, 14,500 rows).
-
-## Hypothesis validation (E6 spec)
-
-| ID | Hypothesis | Outcome |
-|----|------------|---------|
-| **H1** | Stride-2 placement on GNR+TDX is invariant to RT mode | **Not addressed** — this experiment is SPR, not GNR+TDX, and tests single-CPU placement vs stride-2 multi-thread. Defers to E2-style sweep. |
-| **H2** | Optimal thread count *decreases* under RT due to housekeeping reservation | **Partial** — single-thread saturates at 15.6 K calls/sec; matching production 33 K trades/sec needs ≥2 threads (see "Production-rate analysis" below). Doesn't test "optimal" point above 2 threads. |
-| **H3** | AMX `cpu_max` threshold shifts upward under RT | **Not addressed** — `compute_entropy()` at this size doesn't engage AMX tiles. Needs E2-style ISA-ceiling sweep with sized matmul to test. |
-| **H4** | Tail latency tightens significantly under RT, median flat or worse | **CONFIRMED** ✅ — saturation-cadence: median identical across configs (50 µs), max drops 41 % under isolation, stddev tightens 8 % under RT-FIFO. Production-cadence: p99.99 = 342 µs, single >1 ms outlier in 14,500 samples. Both shapes show the RT tail-tightening property. **This is the load-bearing finding for the autonomous-systems pitch.** |
-| **H5** | AMX tile save/restore is RT-clean (no jitter from XSAVE/XRSTOR on context switch) | **Deferred** — needs `perf stat` event counters (`fpu.amx_tile_config`) under sustained AMX load. The current `compute_entropy()` shape doesn't exercise AMX tiles meaningfully. Roll into the E2-style ISA-ceiling sweep when that lands. |
-
-## Production-rate analysis
-
-Real Polygon replay produces ~33 K trades/sec aggregate across 10 tickers
-(GCP measurement, `polygon-ingress` deployment on `ulysses-demo` cluster) —
-3.3 K trades/sec/ticker. At the InferenceService shape (32-tick window,
-fire-on-each-trade-update), each ticker generates 3,300 calls/sec; 10 tickers
-× 3,300 = 33,000 calls/sec aggregate compute target.
-
-Single-threaded saturation rate measured: **15,596 calls/sec** (RT-FIFO
-config). To match the production aggregate rate, **2 threads suffice**
-(2 × 15.6 K = 31.2 K, ~94 % of target with comfortable headroom; 3 threads
-gives 47 K with margin for jitter). Per-ticker windows are independent so
-the parallelization is trivial — assign each thread a disjoint subset of
-tickers; no synchronization needed.
-
-On the c3-standard-8 host (8 vCPU, isolcpus=2–7), 2 threads occupy 2 of
-the 6 isolated CPUs. The remaining 4 isolated CPUs are headroom for
-either (a) replicas / additional ticker fan-out, (b) the Kafka consumer
-loop sitting alongside, or (c) AMX engagement at larger matrix sizes (E2
-ISA-ceiling sweep).
-
 ## The pipeline-vs-compute finding (load-bearing)
 
 The `ulysses-demo` GCP cluster's README reports **~1 ms p95 window-compute
-latency** as a top-line metric. That measurement was taken end-to-end at
-the SOR consumer's prometheus histogram — i.e., it includes:
-
-- Kafka message dispatch (consumer poll + decode)
-- Per-ticker rolling-window state lookup
-- The `compute_entropy()` math itself
-- Histogram observation overhead
-
-The pure `compute_entropy()` math, measured here under PREEMPT_RT with the
-same 512-window/32-embed shape, is **167 µs at p95**. That means
-**≈833 µs / 1 ms ≈ 83–94 % of the GCP demo's p95 latency is *not* the
+latency** as a top-line metric. The pure `compute_entropy()` math, measured
+here under PREEMPT_RT with the same 512-window/32-embed shape, is
+**167 µs at p95**. **≈83-94 % of the GCP demo's p95 latency is *not* the
 compute** — it's the surrounding pipeline (Kafka dispatch, deserialization,
-state management, histogram observation). The compute math itself is
-dramatically smaller than the production pipeline overhead.
+state management, histogram observation).
 
-**Implications for the keynote pitch:**
-
+Implications:
 1. The "Kavara compute is fast" claim is much stronger than the GCP demo
    metric suggests — the demo metric is bottlenecked on infrastructure,
    not on the math.
-2. Latency optimization investment should target the pipeline (zero-copy
-   Kafka deserialization, Rust-rewrite of the per-ticker state lookup,
-   async batching) before touching the compute kernel.
+2. Latency optimization investment should target the pipeline first.
 3. For autonomous-systems and regulated-edge workloads where the *entire*
    pipeline must be RT-bounded, the architecture is to put the pipeline
-   itself on the RT host — not just the compute. RT-bench under that
-   shape is the next experiment after E2.
+   itself on the RT host — not just the compute.
+
+## Hypothesis status (E6 spec)
+
+| ID | Hypothesis | Status |
+|----|------------|--------|
+| H1 | Stride-2 placement on GNR+TDX is invariant to RT mode | Not addressed (this is SPR, not GNR+TDX) |
+| H2 | Optimal thread count *decreases* under RT due to housekeeping reservation | Partial (Phase 3B production-rate analysis) |
+| H3 | AMX `cpu_max` threshold shifts upward under RT | Addressed indirectly by Phase 3B-followup AMX sweep — see `RESULTS.md`. AMX wins from N=64 on this SPR substrate, suggesting the GNR+TDX-derived `cpu_max=800` threshold doesn't transfer. |
+| **H4** | **Tail latency tightens under RT, median flat or worse** | **CONFIRMED** (Phase 3B saturation + production cadence) |
+| **H5** | **AMX tile save/restore is RT-clean** | **CONFIRMED** (Phase 3B-followup AMX sweep, all 7 amx-on cells; see `RESULTS.md`) |
 
 ## Files
 
-- `provision.sh` — VM provisioning + kernel-rt install + tuning, idempotent
-- `bench.py` — production-cadence harness (window=512, embed=32, 1,800 s
-  steady-state, ~14.5 K samples)
-- `bench_saturation.py` — saturation-cadence harness (window=32, embed=8,
-  back-to-back, ~470 K samples per config)
+- `provision.sh` — full-path VM provisioning (Kafka mTLS + bench.py push); used for Phase 3B production-cadence
+- `bench.py` — production-cadence harness (window=512, embed=32, 1,800 s steady-state, ~14.5 K samples)
+- `bench_saturation.py` — saturation-cadence harness (window=32, embed=8, back-to-back, ~470 K samples per config)
+- `bench_amx_sweep.py` — Phase 3B-followup AMX sweep harness (PyTorch + oneDNN, BF16 matmul at N ∈ {64..4096}); see `RESULTS.md` for the full results
+- `sweep.sh` — wrapper that runs the 28-cell AMX sweep (default + rt-fifo kernels, ascending N)
 - `bench.log` — banner + summary from the production-cadence run
-- `results.csv` — production-cadence raw data
-- `results/` — saturation-cadence raw data
-  - `default.csv` — default scheduler, default placement
-  - `pinned.csv` — `taskset -c 4`
-  - `rt-fifo.csv` — `chrt -f 50 taskset -c 4`
-  - `comparison.csv` — aggregated stats across the three configs
-
-## Reproducing
-
-```bash
-# One-time host setup (idempotent — re-run is safe)
-./provision.sh
-
-# Run production-cadence (long; 30+ min wall-clock)
-gcloud compute ssh ulysses-rt-bench --zone=us-central1-a \
-    --project=office-of-cto-491318
-sudo DURATION_SECONDS=1800 WARMUP_SECONDS=60 \
-     OUT_CSV=/home/$USER/rt-bench/results.csv \
-     taskset -c 2-7 chrt -f 80 python3.11 ~/rt-bench/bench.py
-
-# Run saturation-cadence (short; ~30 s × 3 configs = 90 s wall-clock)
-python3 /tmp/bench.py --duration 30 --out /tmp/rt-bench/default.csv --config default
-taskset -c 4 python3 /tmp/bench.py --duration 30 --out /tmp/rt-bench/pinned.csv --config pinned
-sudo chrt -f 50 taskset -c 4 python3 /tmp/bench.py --duration 30 --out /tmp/rt-bench/rt-fifo.csv --config rt-fifo
-
-# Pull both result sets
-gcloud compute scp --zone=us-central1-a --project=office-of-cto-491318 \
-    ulysses-rt-bench:/home/$USER/rt-bench/results.csv .
-gcloud compute scp --zone=us-central1-a --project=office-of-cto-491318 \
-    ulysses-rt-bench:/tmp/rt-bench/'*.csv' results/
-
-# Teardown
-./provision.sh teardown
-```
+- `results.csv` — Phase 3B production-cadence raw data (14.5 K rows)
+- `results/`
+  - `default.csv`, `pinned.csv`, `rt-fifo.csv`, `comparison.csv` — Phase 3B saturation-cadence
+  - `sweep.csv` — Phase 3B-followup AMX sweep per-call (190 K rows)
+  - `sweep_summary.csv` — Phase 3B-followup AMX sweep per-cell stats
+  - `onednn_verbose_sample.txt` — ONEDNN_VERBOSE captured for the N=2048 amx-on rt-fifo cell
+  - `run.log` — sweep wrapper banner + per-cell timing
+- `RESULTS.md` — Phase 3B-followup AMX sweep findings (the experiment writeup)
