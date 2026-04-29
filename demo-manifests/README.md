@@ -39,7 +39,14 @@ clusters tell complementary stories: GCP demonstrates per-pod Kata
 isolation on a non-confidential host; Azure demonstrates host-level
 TDX with native runc (TDX guests block nested virt, so per-pod Kata
 isn't a viable path on DCesv6 — see Gotcha #12 below). The Azure
-provisioning recipe lives under `cluster/azure/`. The primary entry point is
+provisioning recipe lives under `cluster/azure/`. A third measurement
+host (`ulysses-rt-bench`, GCP `c3-standard-8`, CentOS Stream 9 +
+`kernel-rt-5.14.0+rt`, `isolcpus=2-7`) was provisioned for **PREEMPT_RT
+characterisation** of the same `compute_entropy()` math: p99.9 = 66 µs
+single-thread, max < 110 µs under RT-FIFO + isolation; pure compute is
+**~94 % under** the pipeline-attributed p95 of the GCP demo cluster.
+Methodology, full percentile tables, and CSV results in
+`experiments/rhel-rt-latency/`. The primary entry point is
 [`DEPLOY_WITH_CLAUDE_CODE.md`](DEPLOY_WITH_CLAUDE_CODE.md), a step-by-step
 runbook designed to be driven via Claude Code as a natural-language
 operator: each step is a command Claude proposes, runs, interprets, and
