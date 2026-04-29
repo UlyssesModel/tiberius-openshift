@@ -1,0 +1,49 @@
+---
+# KServe InferenceService — Ulysses SOR von Neumann entropy compute as a
+# first-class Red Hat AI catalog citizen.
+#
+# Same math as image/consumer.py exposed through KServe V2 Open Inference
+# Protocol on POST /v2/models/ulysses-sor-inference/infer. The cluster runs
+# both interfaces side-by-side: the Kafka-consumer pipeline (continuous
+# stream) and this InferenceService (request/response). One compute, two
+# wrappers — production swap point is `compute_entropy` in inference.py.
+#
+# Deployment mode: RawDeployment (no Knative dependency). The cluster-wide
+# default is set to RawDeployment via the kserve `inferenceservice-config`
+# ConfigMap; the explicit annotation below is documentation-only.
+#
+# Smoke-test from inside the cluster:
+#   oc -n ulysses-demo port-forward svc/ulysses-sor-inference-predictor 8080:80
+#   curl -s -X POST http://localhost:8080/v2/models/ulysses-sor-inference/infer \
+#     -H 'Content-Type: application/json' \
+#     -d '{"inputs":[{"name":"prices","shape":[1,32],"datatype":"FP64",
+#                     "data":[100.0,100.5,101.0,...]}]}'
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ulysses-sor-inference
+  namespace: ulysses-demo
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    containers:
+      - name: kserve-container
+        image: quay.io/kavara/ulysses-sor-inference:v1
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 8080
+            protocol: TCP
+        resources:
+          # Compute is closed-form numpy.linalg.eigvalsh on a small Hermitian
+          # — fits comfortably in 200m. Asymmetric request/limit pattern lets
+          # it burst when concurrent requests arrive without consuming budget
+          # the cluster's other workloads need. SNO sizing: this fits the
+          # GCP c3-standard-44's residual headroom after the existing Kafka
+          # consumer pipeline + observability stack are scheduled.
+          requests:
+            cpu: "200m"
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi

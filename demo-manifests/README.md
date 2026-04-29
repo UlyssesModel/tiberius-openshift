@@ -98,6 +98,54 @@ ArgoCD is wired as observer (auto-sync off). The following resources show OutOfS
 
 All three live measurements (1.5M trades, 0.873 entropies/s, 1ms p95 window compute) reflect this exact cluster state. The OutOfSync count is GitOps hygiene work, not a functional issue.
 
+## OpenShift AI catalog path
+
+The SOR / entropy compute is also wrapped as a **KServe `InferenceService`**
+(`11-kserve-inference.yaml`, image `quay.io/kavara/ulysses-sor-inference:v1`).
+The cluster runs both interfaces side-by-side: the Kafka-consumer pipeline
+(continuous stream from `market.equities.trades`) AND the InferenceService
+(request/response via V2 OpenInference Protocol). One compute,
+[two wrappers](image/inference.py) — production swap point is `compute_entropy`
+in both.
+
+```
+POST /v2/models/ulysses-sor-inference/infer
+{
+  "inputs": [
+    { "name": "prices", "shape": [N, 32], "datatype": "FP64", "data": [...] }
+  ]
+}
+→ { "model_name": "ulysses-sor-inference",
+    "outputs": [
+      { "name": "entropy", "shape": [N], "datatype": "FP64", "data": [...] }
+    ] }
+```
+
+**Smoke-test deliverables (2026-04-29, GCP `ulysses-demo`)**:
+
+| Metric | Value |
+|---|---|
+| Cold-call latency | 43.4 ms |
+| Steady-state mean (100 calls) | **3.09 ms / call** |
+| Math equivalence vs `image/consumer.py` | bit-exact (delta = 0.00e+00) |
+
+**Why this is the right interface for the Red Hat AI portfolio:**
+
+- **Catalog registration** — an `InferenceService` is the standard interface
+  for OpenShift AI's model serving stack. Registering Kavara's compute as
+  a catalog entry makes it discoverable + composable.
+- **TrustyAI compose** — TrustyAI hooks into V2 OpenInference Protocol
+  natively, so explainability dashboards (LIME/SHAP-style attribution on
+  the entropy spectrum) become "free" once this is up.
+- **`InferenceGraph` chaining** — chain multiple models as a DAG (pre-
+  process → entropy → post-process); the KServe interface is the
+  prerequisite, the chaining is straight infra.
+
+KServe install on this cluster is **upstream open-source v0.17.0** in
+**RawDeployment** mode (no Knative / Istio dependency); cluster-wide
+default set via the `inferenceservice-config` ConfigMap. Closes the
+catalog publication path (Confluence Action #7, opened 2026-04-28).
+
 ## Known operational gotchas
 
 The full list lives in the project's Confluence "painful gotchas"
