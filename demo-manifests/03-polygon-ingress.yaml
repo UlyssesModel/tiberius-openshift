@@ -20,6 +20,13 @@ data:
   KAFKA_BOOTSTRAP: "kafka-cluster-kafka-bootstrap.ulysses-demo.svc:9093"
   TOPIC_TRADES: "market.equities.trades"
   TOPIC_QUOTES: "market.equities.quotes"
+  # Options-side topics. Subscriptions are full chains for OPTIONS_UNDERLYINGS
+  # at 0..OPTIONS_DTE_MAX days-to-expiry, enumerated via REST at startup and
+  # refreshed every 30 min. Live mode only — replay path is V2.
+  TOPIC_OPTIONS_TRADES: "market.options.trades"
+  TOPIC_OPTIONS_QUOTES: "market.options.quotes"
+  OPTIONS_UNDERLYINGS: "SPY,QQQ"
+  OPTIONS_DTE_MAX: "3"
   SECURITY_PROTOCOL: "SSL"
 ---
 # WARNING: the ingress.py value below is a PLACEHOLDER that recursively

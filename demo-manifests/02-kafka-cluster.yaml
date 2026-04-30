@@ -128,6 +128,41 @@ spec:
     segment.bytes: "134217728"
     compression.type: "snappy"
 ---
+# Options chains carry ~10-50x more symbols per underlying than equities
+# (full strike grid x weekly expiries). 24 partitions = 2x equities width
+# to spread the higher fan-out; lz4 over snappy because options payloads
+# compress better and we're CPU-bound on the producer at chain enumeration.
+# min.insync.replicas inherits cluster default (2) — same as equities.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: market.options.trades
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  partitions: 24
+  replicas: 3
+  config:
+    retention.ms: "86400000"       # 24h
+    segment.bytes: "134217728"     # 128 MiB
+    compression.type: "lz4"
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: market.options.quotes
+  namespace: ulysses-demo
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  partitions: 24
+  replicas: 3
+  config:
+    retention.ms: "86400000"
+    segment.bytes: "134217728"
+    compression.type: "lz4"
+---
 # Output: entropy per ticker per window. Longer retention for replay.
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaTopic
@@ -195,6 +230,11 @@ spec:
       - resource:
           type: topic
           name: market.equities.
+          patternType: prefix
+        operations: [Write, Describe, Create]
+      - resource:
+          type: topic
+          name: market.options.
           patternType: prefix
         operations: [Write, Describe, Create]
       # Same idempotent-producer cluster ACL — see ulysses-sor block.
