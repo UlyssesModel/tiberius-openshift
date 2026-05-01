@@ -1,0 +1,64 @@
+# Tensor-generator Job — runs `uhura run` once to produce the Sept N=16
+# bundle into the PVC. The Quantbot summary parquets are baked into the
+# uhura image at /opt/uhura/quantbot-data/, so the Job is self-contained.
+#
+# Re-running:
+#   oc -n ulysses-demo delete job uhura-tensor-generator
+#   then re-trigger Argo sync.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: uhura-tensor-generator
+  namespace: ulysses-demo
+  labels:
+    app.kubernetes.io/part-of: kavara
+    app.kubernetes.io/component: validation-sandbox
+    app.kubernetes.io/role: tensor-generator
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: kavara
+        app.kubernetes.io/role: tensor-generator
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: generator
+          image: quay.io/kavara/uhura:v0.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              echo "Wiping any prior bundle..."
+              rm -rf /data/tensors/sp500-N16
+              mkdir -p /data/tensors/sp500-N16
+              echo "Generating sp500 N=16 tensors from baked Quantbot data..."
+              /opt/uhura/.venv/bin/uhura run \
+                  --design cross_section_temporal \
+                  --universe sp500 \
+                  --N 16 \
+                  --input /opt/uhura/quantbot-data \
+                  --output /data/tensors/sp500-N16 \
+                  --max-emits 400
+              echo "Manifest:"
+              cat /data/tensors/sp500-N16/manifest.json
+              echo "First 3 tensor files:"
+              ls /data/tensors/sp500-N16/tensors/ | head -3
+          volumeMounts:
+            - name: tensor-bundle
+              mountPath: /data/tensors
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+      volumes:
+        - name: tensor-bundle
+          persistentVolumeClaim:
+            claimName: uhura-tensor-bundle

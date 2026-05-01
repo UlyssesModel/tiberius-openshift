@@ -1,0 +1,70 @@
+# Mock Kirk inference service — stand-in for the real active_inference_pure
+# forward pass. Returns the §3 triplet (generation, entropy_per_row,
+# scalar_entropy). With --replay pointed at a baked-in entropy_price.parq,
+# the mock returns reference values verbatim by timestamp lookup, so the
+# validate Job will pass with zero diff.
+#
+# Swap to real Kirk later by:
+#   oc -n ulysses-demo set image deploy/uhura-mock-kirk \
+#       mock=quay.io/kavara/kirk-serve:v0.1
+#   oc -n ulysses-demo rollout status deploy/uhura-mock-kirk
+# Service name stays `uhura-mock-kirk`; validate Job needs no change.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uhura-mock-kirk
+  namespace: ulysses-demo
+  labels:
+    app.kubernetes.io/part-of: kavara
+    app.kubernetes.io/component: validation-sandbox
+    app.kubernetes.io/name: uhura-mock-kirk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: uhura-mock-kirk
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: kavara
+        app.kubernetes.io/component: validation-sandbox
+        app.kubernetes.io/name: uhura-mock-kirk
+    spec:
+      containers:
+        - name: mock
+          image: quay.io/kavara/uhura:v0.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/uhura/.venv/bin/python
+            - /opt/uhura/scripts/mock_kirk_serve.py
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --replay
+            - /opt/uhura/references/20240904_entropy_price.parq
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 1Gi

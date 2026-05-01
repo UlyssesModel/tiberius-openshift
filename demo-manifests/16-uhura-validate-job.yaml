@@ -1,0 +1,62 @@
+# Validate Job — runs `uhura validate` against uhura-mock-kirk inside the
+# cluster. Tensor bundle from the PVC (populated by 13-uhura-tensor-generator).
+# Reference parquets baked into the uhura image at /opt/uhura/references/.
+#
+# The Job echoes the JSON report to stdout, so:
+#   oc -n ulysses-demo logs job/uhura-validate
+# is the only thing Wally needs to read.
+#
+# Re-running: `oc -n ulysses-demo delete job uhura-validate` then re-sync Argo.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: uhura-validate
+  namespace: ulysses-demo
+  labels:
+    app.kubernetes.io/part-of: kavara
+    app.kubernetes.io/component: validation-sandbox
+    app.kubernetes.io/role: validator
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: kavara
+        app.kubernetes.io/role: validator
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: validate
+          image: quay.io/kavara/uhura:v0.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              echo "Validating /data/tensors/sp500-N16/tensors against 20240904_entropy_price.parq"
+              echo "Kirk endpoint: http://uhura-mock-kirk:8000"
+              /opt/uhura/.venv/bin/uhura validate \
+                  --tensor-dir /data/tensors/sp500-N16/tensors \
+                  --reference /opt/uhura/references/20240904_entropy_price.parq \
+                  --kirk-endpoint http://uhura-mock-kirk:8000 \
+                  --tolerance 1e-6 \
+                  --output /tmp/validation-report.json
+              echo "===== validation-report.json ====="
+              cat /tmp/validation-report.json
+          volumeMounts:
+            - name: tensor-bundle
+              mountPath: /data/tensors
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1
+              memory: 2Gi
+      volumes:
+        - name: tensor-bundle
+          persistentVolumeClaim:
+            claimName: uhura-tensor-bundle
